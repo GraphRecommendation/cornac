@@ -21,7 +21,7 @@ from ..data import Reader
 from typing import List
 
 
-def load_feedback(reader: Reader = None) -> List:
+def load_feedback(fmt="UIR", reader: Reader = None) -> List:
     """Load the user-item ratings, scale: [1,5]
 
     Parameters
@@ -36,7 +36,7 @@ def load_feedback(reader: Reader = None) -> List:
     """
     fpath = 'experiment/seer-ijcai2020/cellphone/ratings.txt'
     reader = Reader() if reader is None else reader
-    return reader.read(fpath, fmt="UIR", sep=",")
+    return reader.read(fpath, fmt=fmt, sep=",")
 
 
 def load_review(reader: Reader = None) -> List:
