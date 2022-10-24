@@ -16,11 +16,11 @@
 import cornac
 from cornac.datasets import amazon_digital_music, amazon_cellphone_seer
 from cornac.eval_methods import RatioSplit, StratifiedSplit
-from cornac.data import ReviewModality, SentimentModality
+from cornac.data import ReviewModality, SentimentModality, Reader
 from cornac.data.text import BaseTokenizer
 
 def run():
-    feedback = amazon_cellphone_seer.load_feedback(fmt="UIRT")
+    feedback = amazon_cellphone_seer.load_feedback(fmt="UIRT", reader=Reader(min_user_freq=5))
     reviews = amazon_cellphone_seer.load_review()
     sentiment = amazon_cellphone_seer.load_sentiment()
 
