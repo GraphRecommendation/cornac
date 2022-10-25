@@ -104,8 +104,8 @@ class HEAR(Recommender):
 		sampler = dgl.dataloading.as_edge_prediction_sampler(sampler, exclude='self')
 		dataloader = dgl.dataloading.DataLoader(g, eids, sampler, batch_size=1024, shuffle=True, drop_last=True)
 		optimizer = optim.Adam(self.model.parameters(), lr=0.01)
-
-		for e in range(1):
+		length = len(dataloader)
+		for e in range(10):
 			tot_loss = 0
 			with tqdm(dataloader) as progress:
 				for i, (input_nodes, edge_subgraph, blocks) in enumerate(progress, 1):
@@ -122,14 +122,30 @@ class HEAR(Recommender):
 
 					optimizer.step()
 					optimizer.zero_grad()
-					progress.set_description(f'Epoch {e}, MSE: {tot_loss / i:.5f}')
+					if i != length or val_set is None:
+						progress.set_description(f'Epoch {e}, MSE: {tot_loss / i:.5f}')
+					else:
+						score = self._validate(val_set)
+						progress.set_description(f'Epoch {e}, MSE: {tot_loss / i:.5f}, ValMSE: {score:.5f}')
 
 		self.model.eval()
 		with torch.no_grad():
 			self.model.inference(self.review_graphs, self.node_review_graph)
 
+	def _validate(self, val_set):
+		from ...eval_methods.base_method import rating_eval
+		from ...metrics import MSE
+
+		self.model.eval()
+		with torch.no_grad():
+			self.model.inference(self.review_graphs, self.node_review_graph)
+			((score,), _) = rating_eval(self, [MSE()], val_set)
+		return score
+
 	def score(self, user_idx, item_idx=None):
-		return self.model.predict(user_idx + self.n_items, item_idx)
+		self.model.eval()
+		with torch.no_grad():
+			return self.model.predict(user_idx + self.n_items, item_idx).cpu()
 
 	def monitor_value(self):
 		pass
