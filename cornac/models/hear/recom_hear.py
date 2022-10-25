@@ -17,8 +17,9 @@ class HEAR(Recommender):
 		super().__init__(name)
 		self.node_review_graph = None
 		self.review_graphs = {}
-		self.review_pair_map = {}
 		self.train_graph = None
+		self.model = None
+		self.n_items = 0
 
 	def _create_graphs(self, train_set: Dataset):
 		# create 1) u,i,a, 2) u,i,o 3) u, a, o, 4) i, o, a
@@ -26,6 +27,7 @@ class HEAR(Recommender):
 		edge_id = 0
 		n_users = len(train_set.uid_map)
 		n_items = len(train_set.iid_map)
+		self.n_items = n_items
 		n_aspects = len(sentiment_modality.aspect_id_map)
 		n_opinions = len(sentiment_modality.opinion_id_map)
 		user_item_review_map = {(uid + n_items, iid): rid for uid, irid in sentiment_modality.user_sentiment.items()
@@ -73,7 +75,7 @@ class HEAR(Recommender):
 
 				assert len(edges) * 2 == g.num_edges()
 
-				self.review_graphs[(uid, iid)] = g
+				self.review_graphs[rid] = g
 
 		# Create training graph, i.e. user to item graph.
 		edges = [(uid + n_items, iid, train_set.matrix[uid,iid]) for uid, rs in train_set.review_text.user_review.items()
@@ -83,8 +85,6 @@ class HEAR(Recommender):
 		self.train_graph.edata['rid'] = torch.LongTensor([user_item_review_map[(u, i)] for (u, i, r) in edges])
 		self.train_graph.edata['label'] = t_edges[2].to(torch.float)
 
-		self.review_pair_map = {rid: pair for pair, rid in user_item_review_map.items()}
-
 		# Create user/item to review graph.
 		edges = torch.LongTensor(review_edges).T
 		self.node_review_graph = dgl.heterograph({('review', 'part_of', 'node'): (edges[0], edges[1])})
@@ -92,29 +92,30 @@ class HEAR(Recommender):
 		return n_users + n_items + n_aspects + n_opinions
 
 	def fit(self, train_set: Dataset, val_set=None):
+		super().fit(train_set, val_set)
 		n_nodes = self._create_graphs(train_set)  # graphs are as attributes of model.
 
 		# create model
-		model = Model(n_nodes)
+		self.model = Model(n_nodes)
 
 		g = self.train_graph
 		eids = g.edges(form='eid')
-		sampler = dgl_utils.HearBlockSampler(self.node_review_graph, self.review_graphs, self.review_pair_map)
+		sampler = dgl_utils.HearBlockSampler(self.node_review_graph, self.review_graphs)
 		sampler = dgl.dataloading.as_edge_prediction_sampler(sampler, exclude='self')
 		dataloader = dgl.dataloading.DataLoader(g, eids, sampler, batch_size=1024, shuffle=True, drop_last=True)
-		optimizer = optim.Adam(model.parameters(), lr=0.01)
+		optimizer = optim.Adam(self.model.parameters(), lr=0.01)
 
-		for e in range(10):
+		for e in range(1):
 			tot_loss = 0
 			with tqdm(dataloader) as progress:
 				for i, (input_nodes, edge_subgraph, blocks) in enumerate(progress, 1):
-					x = model.node_embedding(input_nodes)
+					x = self.model.node_embedding(input_nodes)
 
-					x = model(blocks, x)
+					x = self.model(blocks, x)
 
-					pred = model.graph_predict(edge_subgraph, x)
+					pred = self.model.graph_predict(edge_subgraph, x)
 
-					loss = model.loss(pred, edge_subgraph.edata['label'])
+					loss = self.model.loss(pred, edge_subgraph.edata['label'])
 					loss.backward()
 
 					tot_loss += loss.detach()
@@ -123,8 +124,12 @@ class HEAR(Recommender):
 					optimizer.zero_grad()
 					progress.set_description(f'Epoch {e}, MSE: {tot_loss / i:.5f}')
 
+		self.model.eval()
+		with torch.no_grad():
+			self.model.inference(self.review_graphs, self.node_review_graph)
+
 	def score(self, user_idx, item_idx=None):
-		pass
+		return self.model.predict(user_idx + self.n_items, item_idx)
 
 	def monitor_value(self):
 		pass
