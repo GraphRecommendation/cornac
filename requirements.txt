@@ -1,7 +1,12 @@
+# Links for torch and dgl
+-f https://download.pytorch.org/whl/torch_stable.html
+-f https://data.dgl.ai/wheels/repo.html
+
 protobuf==3.20
 pandas==1.5.1
 scipy==1.9.3
 tqdm==4.64.1
 powerlaw==1.5
 dgl==0.9.1
-torch==1.12.1
+dgl-cu116==0.9.1
+torch==1.12.1+cu116
