@@ -161,6 +161,13 @@ class Model(nn.Module):
         self.review_embs = None
         self.inf_emb = None
 
+    def reset_parameters(self):
+        for name, parameter in self.named_parameters():
+            if name.endswith('bias'):
+                nn.init.constant_(parameter, 0)
+            else:
+                nn.init.xavier_normal_(parameter)
+
     def forward(self, blocks, x):
         x = self.review_conv(blocks[0], x)
 

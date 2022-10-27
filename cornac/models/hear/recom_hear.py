@@ -149,6 +149,8 @@ class HEAR(Recommender):
         # create model
         self.model = Model(n_nodes, self.review_aggregator, self.predictor, self.node_dim,
                            self.review_dim, self.final_dim, self.num_heads)
+
+        self.model.reset_parameters()
         if self.use_cuda:
             self.model = self.model.cuda()
             prefetch = ['label']
