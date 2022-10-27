@@ -21,8 +21,10 @@ class HEAR(Recommender):
                  fanout=5,
                  model_selection='best',
                  review_aggregator='narre',
+                 predictor='gatv2',
                  layer_dropout=None,
                  attention_dropout=.2,
+                 user_based=True,
                  debug=False
                  ):
         super().__init__(name)
@@ -44,6 +46,7 @@ class HEAR(Recommender):
         self.fanout = fanout
         self.model_selection = model_selection
         self.review_aggregator = review_aggregator
+        self.predictor = predictor
         self.layer_dropout = layer_dropout
         self.attention_dropout = attention_dropout
 
@@ -55,6 +58,7 @@ class HEAR(Recommender):
         self.n_items = 0
 
         # Misc
+        self.user_based = user_based
         self.debug = debug
 
     def _create_graphs(self, train_set: Dataset):
@@ -141,7 +145,7 @@ class HEAR(Recommender):
         n_nodes = self._create_graphs(train_set)  # graphs are as attributes of model.
 
         # create model
-        self.model = Model(n_nodes, self.review_aggregator)
+        self.model = Model(n_nodes, self.review_aggregator, predictor=self.predictor)
         if self.use_cuda:
             self.model = self.model.cuda()
             prefetch = ['label']
@@ -163,10 +167,6 @@ class HEAR(Recommender):
             eids = eids.to(self.device)
             self.node_review_graph = self.node_review_graph.to(self.device)
             num_workers = 0
-
-        #TODO remvoe
-        # u, v  = g.edges()
-        # eids = torch.unique(v)
 
         if self.debug:
             num_workers = 0
@@ -228,7 +228,7 @@ class HEAR(Recommender):
         self.model.eval()
         with torch.no_grad():
             self.model.inference(self.review_graphs, self.node_review_graph, self.device)
-            ((mse, rmse), _) = rating_eval(self, [MSE(), RMSE()], val_set, user_based=True)
+            ((mse, rmse), _) = rating_eval(self, [MSE(), RMSE()], val_set, user_based=self.user_based)
 
         self.node_review_graph = self.node_review_graph.to(d)
         return mse, rmse
@@ -238,7 +238,9 @@ class HEAR(Recommender):
 
         self.model.eval()
         with torch.no_grad():
-            return self.model.predict(user_idx + self.n_items, item_idx, self.node_review_graph).cpu()
+            user_idx = torch.tensor(user_idx + self.n_items, dtype=torch.int64).to(self.device)
+            item_idx = torch.tensor(item_idx, dtype=torch.int64).to(self.device)
+            return self.model.predict(user_idx, item_idx, self.node_review_graph).cpu()
 
     def monitor_value(self):
         pass
