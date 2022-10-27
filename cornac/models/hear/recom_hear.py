@@ -1,6 +1,7 @@
 from collections import Counter, defaultdict
 from math import sqrt
 
+import torch
 from tqdm import tqdm
 
 from ..recommender import Recommender
@@ -9,7 +10,7 @@ from ...data import Dataset
 
 class HEAR(Recommender):
     def __init__(self, name='HEAR', use_cuda=False, use_uva=False,
-                 batch_size=64,
+                 batch_size=128,
                  num_workers=0,
                  num_epochs=10,
                  learning_rate=0.1,
@@ -19,8 +20,10 @@ class HEAR(Recommender):
                  attention_size=32,
                  fanout=5,
                  model_selection='best',
+                 review_aggregator='narre',
                  layer_dropout=None,
-                 attention_dropout=.2
+                 attention_dropout=.2,
+                 debug=False
                  ):
         super().__init__(name)
         # CUDA
@@ -40,6 +43,7 @@ class HEAR(Recommender):
         self.attention_size = attention_size
         self.fanout = fanout
         self.model_selection = model_selection
+        self.review_aggregator = review_aggregator
         self.layer_dropout = layer_dropout
         self.attention_dropout = attention_dropout
 
@@ -49,6 +53,9 @@ class HEAR(Recommender):
         self.train_graph = None
         self.model = None
         self.n_items = 0
+
+        # Misc
+        self.debug = debug
 
     def _create_graphs(self, train_set: Dataset):
         import dgl
@@ -112,9 +119,7 @@ class HEAR(Recommender):
                 self.review_graphs[rid] = g
 
         # Create training graph, i.e. user to item graph.
-        edges = [(uid + n_items, iid, train_set.matrix[uid, iid]) for uid, rs in
-                 train_set.review_text.user_review.items()
-                 for iid, rid in rs.items() if (uid + n_items, iid) in user_item_review_map]
+        edges = [(uid + n_items, iid, train_set.matrix[uid, iid]) for uid, iid in zip(*train_set.matrix.nonzero())]
         t_edges = torch.LongTensor(edges).T
         self.train_graph = dgl.graph((t_edges[0], t_edges[1]))
         self.train_graph.edata['rid'] = torch.LongTensor([user_item_review_map[(u, i)] for (u, i, r) in edges])
@@ -136,7 +141,7 @@ class HEAR(Recommender):
         n_nodes = self._create_graphs(train_set)  # graphs are as attributes of model.
 
         # create model
-        self.model = Model(n_nodes)
+        self.model = Model(n_nodes, self.review_aggregator)
         if self.use_cuda:
             self.model = self.model.cuda()
             prefetch = ['label']
@@ -145,7 +150,12 @@ class HEAR(Recommender):
 
         # Get graph and edges
         g = self.train_graph
-        eids = g.edges(form='eid')
+        u, v = g.edges()
+        _, i, c = torch.unique(u, sorted=False, return_inverse=True, return_counts=True)
+        mask = c[i] > 1
+        _, i, c = torch.unique(v, sorted=False, return_inverse=True, return_counts=True)
+        mask *= (c[i] > 1)
+        eids = g.edges(form='eid')[mask]
         num_workers = self.num_workers
 
         if self.use_uva:
@@ -154,12 +164,22 @@ class HEAR(Recommender):
             self.node_review_graph = self.node_review_graph.to(self.device)
             num_workers = 0
 
+        #TODO remvoe
+        # u, v  = g.edges()
+        # eids = torch.unique(v)
+
+        if self.debug:
+            num_workers = 0
+            thread = False
+        else:
+            thread = None
+
         # Create sampler
-        sampler = dgl_utils.HearBlockSampler(self.node_review_graph, self.review_graphs)
-        sampler = dgl.dataloading.as_edge_prediction_sampler(sampler, exclude='self', prefetch_labels=prefetch)
+        sampler = dgl_utils.HearBlockSampler(self.node_review_graph, self.review_graphs, self.review_aggregator, fanout=self.fanout)
+        sampler = dgl_utils.HEAREdgeSampler(sampler, prefetch_labels=prefetch)
         dataloader = dgl.dataloading.DataLoader(g, eids, sampler, batch_size=self.batch_size, shuffle=True,
                                                 drop_last=True, device=self.device, use_uva=self.use_uva,
-                                                num_workers=num_workers)
+                                                num_workers=num_workers, use_prefetch_thread=thread)
 
         # Initialize training params.
         optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
@@ -191,28 +211,34 @@ class HEAR(Recommender):
                                                  f'L2: {tot_l2 / i:.5f}, '
                                                  f'Tot: {tot_loss / i:.5f}')
                     else:
-                        score = self._validate(val_set)
-                        progress.set_description(f'Epoch {e}, MSE: {tot_mse / i:.5f}, ValMSE: {score:.5f}')
+                        mse, rmse = self._validate(val_set)
+                        progress.set_description(f'Epoch {e}, MSE: {tot_mse / i:.5f}, Val: MSE: {mse:.5f}, '
+                                                 f'RMSE: {rmse:.5f}')
 
         _ = self._validate(val_set)
+        self.node_review_graph = self.node_review_graph.to(self.device)
 
     def _validate(self, val_set):
         from ...eval_methods.base_method import rating_eval
-        from ...metrics import MSE
+        from ...metrics import MSE, RMSE
         import torch
+        d = self.node_review_graph.device
+        self.node_review_graph = self.node_review_graph.to(self.device)
 
         self.model.eval()
         with torch.no_grad():
             self.model.inference(self.review_graphs, self.node_review_graph, self.device)
-            ((score,), _) = rating_eval(self, [MSE()], val_set)
-        return score
+            ((mse, rmse), _) = rating_eval(self, [MSE(), RMSE()], val_set, user_based=True)
+
+        self.node_review_graph = self.node_review_graph.to(d)
+        return mse, rmse
 
     def score(self, user_idx, item_idx=None):
         import torch
 
         self.model.eval()
         with torch.no_grad():
-            return self.model.predict(user_idx + self.n_items, item_idx).cpu()
+            return self.model.predict(user_idx + self.n_items, item_idx, self.node_review_graph).cpu()
 
     def monitor_value(self):
         pass

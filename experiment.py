@@ -20,9 +20,9 @@ from cornac.data import ReviewModality, SentimentModality, Reader
 from cornac.data.text import BaseTokenizer
 
 def run():
-    feedback = amazon_cellphone_seer.load_feedback(fmt="UIRT", reader=Reader(min_user_freq=5))
+    feedback = amazon_cellphone_seer.load_feedback(fmt="UIRT", reader=Reader())
     reviews = amazon_cellphone_seer.load_review()
-    sentiment = amazon_cellphone_seer.load_sentiment()
+    sentiment = amazon_cellphone_seer.load_sentiment(reader=Reader())
 
     sentiment_modality = SentimentModality(data=sentiment)
 
@@ -47,10 +47,11 @@ def run():
 
     pretrained_word_embeddings = {}  # You can load pretrained word embedding here
 
-    model = cornac.models.HEAR(use_cuda=True, use_uva=False)
+    model = cornac.models.HEAR(use_cuda=True, use_uva=False, num_workers=0, review_aggregator='gatv2',
+                               debug=True, num_epochs=1)
 
     cornac.Experiment(
-        eval_method=eval_method, models=[model], metrics=[cornac.metrics.RMSE()]
+        eval_method=eval_method, models=[model], metrics=[cornac.metrics.MSE(), cornac.metrics.RMSE()]
     ).run()
 
 
