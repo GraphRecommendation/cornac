@@ -14,11 +14,11 @@ class HEAR(Recommender):
                  num_workers=0,
                  num_epochs=10,
                  learning_rate=0.1,
+                 weight_decay=0,
                  node_dim=64,
-                 l2_weight=0,
-                 num_heads=3,
                  review_dim=32,
                  final_dim=16,
+                 num_heads=3,
                  fanout=5,
                  model_selection='best',
                  review_aggregator='narre',
@@ -29,22 +29,25 @@ class HEAR(Recommender):
                  debug=False
                  ):
         super().__init__(name)
+        # Default values
+        if layer_dropout is None:
+            layer_dropout = [0, 0]  # node embedding dropout, review embedding dropout
+
         # CUDA
         self.use_cuda = use_cuda
         self.device = 'cuda' if use_cuda else 'cpu'
         self.use_uva = use_uva
-        assert use_uva == use_cuda or not use_uva, 'use_cuda must be true when using uva.'
 
         # Parameters
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.num_epochs = num_epochs
         self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
         self.node_dim = node_dim
-        self.l2_weight = l2_weight
-        self.num_heads = num_heads
         self.review_dim = review_dim
         self.final_dim = final_dim
+        self.num_heads = num_heads
         self.fanout = fanout
         self.model_selection = model_selection
         self.review_aggregator = review_aggregator
@@ -62,6 +65,11 @@ class HEAR(Recommender):
         # Misc
         self.user_based = user_based
         self.debug = debug
+
+        # assertions
+        assert use_uva == use_cuda or not use_uva, 'use_cuda must be true when using uva.'
+        assert len(layer_dropout) == 2, f'Length of dropout list must be 2 was {len(layer_dropout)}. ' \
+                                        f'First for node embedding dropout, second for review embedding dropout.'
 
     def _create_graphs(self, train_set: Dataset):
         import dgl
@@ -148,7 +156,7 @@ class HEAR(Recommender):
 
         # create model
         self.model = Model(n_nodes, self.review_aggregator, self.predictor, self.node_dim,
-                           self.review_dim, self.final_dim, self.num_heads)
+                           self.review_dim, self.final_dim, self.num_heads, self.layer_dropout, self.attention_dropout)
 
         self.model.reset_parameters()
         if self.use_cuda:
@@ -187,12 +195,12 @@ class HEAR(Recommender):
                                                 num_workers=num_workers, use_prefetch_thread=thread)
 
         # Initialize training params.
-        optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
+        optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
         length = len(dataloader)
         for e in range(self.num_epochs):
-            tot_loss = 0
             tot_mse = 0
-            tot_l2 = 0
+            # tot_l2 = 0
+            # tot_loss = 0
             with tqdm(dataloader) as progress:
                 for i, (input_nodes, edge_subgraph, blocks) in enumerate(progress, 1):
                     x = self.model(blocks, self.model.node_embedding(input_nodes))
@@ -200,21 +208,22 @@ class HEAR(Recommender):
                     pred = self.model.graph_predict(edge_subgraph, x)
 
                     mse_loss = self.model.loss(pred, edge_subgraph.edata['label'])
-                    l2_loss = self.l2_weight * self.model.l2_loss(input_nodes)
-                    loss = mse_loss + l2_loss
+                    # l2_loss = self.weight_decay * self.model.l2_loss(input_nodes)
+                    loss = mse_loss  # + l2_loss
                     loss.backward()
 
                     tot_mse += mse_loss.detach()
-                    tot_l2 += l2_loss.detach()
-                    tot_loss += loss.detach()
+                    # tot_l2 += l2_loss.detach()
+                    # tot_loss += loss.detach()
 
                     optimizer.step()
                     optimizer.zero_grad()
                     if i != length or val_set is None:
                         progress.set_description(f'Epoch {e}, '
-                                                 f'MSE: {tot_mse / i:.5f}, '
-                                                 f'L2: {tot_l2 / i:.5f}, '
-                                                 f'Tot: {tot_loss / i:.5f}')
+                                                 f'MSE: {tot_mse / i:.5f}'
+                                                 # f', L2: {tot_l2 / i:.5f}'
+                                                 # f', Tot: {tot_loss / i:.5f}'
+                                                 )
                     else:
                         mse, rmse = self._validate(val_set)
                         progress.set_description(f'Epoch {e}, MSE: {tot_mse / i:.5f}, Val: MSE: {mse:.5f}, '

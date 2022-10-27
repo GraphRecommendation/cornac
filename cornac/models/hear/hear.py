@@ -130,7 +130,8 @@ class HEARConv(dgl.nn.GATv2Conv):
 
 
 class Model(nn.Module):
-    def __init__(self, n_nodes, aggregator, predictor, node_dim, review_dim, final_dim, num_heads):
+    def __init__(self, n_nodes, aggregator, predictor, node_dim, review_dim, final_dim, num_heads, layer_dropout,
+                 attention_dropout):
         super().__init__()
 
         self.aggregator = aggregator
@@ -141,7 +142,11 @@ class Model(nn.Module):
         self.num_heads = num_heads
         self.node_embedding = nn.Embedding(n_nodes, node_dim)
         self.review_conv = HypergraphLayer(node_dim, review_dim)
-        self.review_agg = HEARConv(aggregator, review_dim, final_dim, num_heads)
+        self.review_agg = HEARConv(aggregator, review_dim, final_dim, num_heads,
+                                   feat_drop=layer_dropout[1], attn_drop=attention_dropout)
+
+        self.node_dropout = nn.Dropout(layer_dropout[0])
+
         if aggregator == 'narre':
             self.node_quality = nn.Embedding(n_nodes, review_dim)
             self.w_0 = nn.Linear(review_dim, final_dim)
@@ -169,6 +174,7 @@ class Model(nn.Module):
                 nn.init.xavier_normal_(parameter)
 
     def forward(self, blocks, x):
+        x = self.node_dropout(x)
         x = self.review_conv(blocks[0], x)
 
         if self.aggregator == 'narre':
