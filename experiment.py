@@ -48,8 +48,8 @@ def run():
 
     pretrained_word_embeddings = {}  # You can load pretrained word embedding here
 
-    model = cornac.models.HEAR(use_cuda=True, use_uva=False, num_workers=5, review_aggregator='narre',
-                               debug=False, num_epochs=3, user_based=user_based, predictor='narre')
+    model = cornac.models.HEAR(use_cuda=True, use_uva=False, num_workers=5, review_aggregator='gatv2',
+                               debug=True, num_epochs=10, user_based=user_based, predictor='narre')
 
     cornac.Experiment(
         eval_method=eval_method, models=[model], metrics=[cornac.metrics.MSE(), cornac.metrics.RMSE()],

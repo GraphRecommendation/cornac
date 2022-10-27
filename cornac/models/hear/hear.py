@@ -130,17 +130,21 @@ class HEARConv(dgl.nn.GATv2Conv):
 
 
 class Model(nn.Module):
-    def __init__(self, n_nodes, aggregator, predictor='dot'):
+    def __init__(self, n_nodes, aggregator, predictor, node_dim, review_dim, final_dim, num_heads):
         super().__init__()
 
         self.aggregator = aggregator
         self.predictor = predictor
-        self.node_embedding = nn.Embedding(n_nodes, 64)
-        self.review_conv = HypergraphLayer(64, 32)
-        self.review_agg = HEARConv(aggregator, 32, 16, 3)
+        self.node_dim = node_dim
+        self.review_dim = review_dim
+        self.final_dim = final_dim
+        self.num_heads = num_heads
+        self.node_embedding = nn.Embedding(n_nodes, node_dim)
+        self.review_conv = HypergraphLayer(node_dim, review_dim)
+        self.review_agg = HEARConv(aggregator, review_dim, final_dim, num_heads)
         if aggregator == 'narre':
-            self.node_quality = nn.Embedding(n_nodes, 32)
-            self.w_0 = nn.Linear(32, 16)
+            self.node_quality = nn.Embedding(n_nodes, review_dim)
+            self.w_0 = nn.Linear(review_dim, final_dim)
         else:
             # Ignore dst during propagation as we have no dst embeddings.
             fc = self.review_agg.fc_dst
@@ -150,8 +154,8 @@ class Model(nn.Module):
             fc.bias.requires_grad = False
 
         if predictor == 'narre':
-            self.node_preference = nn.Embedding(n_nodes, 16)
-            self.w_1 = nn.Linear(16, 1, bias=False)
+            self.node_preference = nn.Embedding(n_nodes, final_dim)
+            self.w_1 = nn.Linear(final_dim, 1, bias=False)
 
         self.loss_fn = nn.MSELoss(reduction='mean')
         self.review_embs = None
@@ -310,4 +314,4 @@ class Model(nn.Module):
             # Node inference
             for input_nodes, output_nodes, blocks in dataloader:
                 x = self.review_aggregation(blocks[0]['part_of'], self.review_embs[input_nodes['review']])
-                self.inf_emb[output_nodes['node']] = x.sum(1)
+                self.inf_emb[output_nodes['node']] = x

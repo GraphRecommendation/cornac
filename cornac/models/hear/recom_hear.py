@@ -14,10 +14,11 @@ class HEAR(Recommender):
                  num_workers=0,
                  num_epochs=10,
                  learning_rate=0.1,
-                 node_embedding=64,
+                 node_dim=64,
                  l2_weight=0,
                  num_heads=3,
-                 attention_size=32,
+                 review_dim=32,
+                 final_dim=16,
                  fanout=5,
                  model_selection='best',
                  review_aggregator='narre',
@@ -39,10 +40,11 @@ class HEAR(Recommender):
         self.num_workers = num_workers
         self.num_epochs = num_epochs
         self.learning_rate = learning_rate
-        self.node_embedding = node_embedding
+        self.node_dim = node_dim
         self.l2_weight = l2_weight
         self.num_heads = num_heads
-        self.attention_size = attention_size
+        self.review_dim = review_dim
+        self.final_dim = final_dim
         self.fanout = fanout
         self.model_selection = model_selection
         self.review_aggregator = review_aggregator
@@ -145,7 +147,8 @@ class HEAR(Recommender):
         n_nodes = self._create_graphs(train_set)  # graphs are as attributes of model.
 
         # create model
-        self.model = Model(n_nodes, self.review_aggregator, predictor=self.predictor)
+        self.model = Model(n_nodes, self.review_aggregator, self.predictor, self.node_dim,
+                           self.review_dim, self.final_dim, self.num_heads)
         if self.use_cuda:
             self.model = self.model.cuda()
             prefetch = ['label']
