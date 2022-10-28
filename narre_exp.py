@@ -62,6 +62,7 @@ def run():
         init_params={'pretrained_word_embeddings': pretrained_word_embeddings},
         verbose=True,
         seed=123,
+        model_selection='best'
     )
 
     cornac.Experiment(

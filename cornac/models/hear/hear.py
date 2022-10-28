@@ -31,10 +31,36 @@ class HypergraphLayer(nn.Module):
             return self.activation(self.linear(dgl.mean_nodes(g, 'h')))
 
 
-class HEARConv(dgl.nn.GATv2Conv):
-    def __init__(self, aggregator='gatv2', *args, **kwargs):
-        super().__init__(*args, **kwargs)
+class HEARConv(nn.Module):
+    def __init__(self,
+                 aggregator,
+                 n_nodes,
+                 in_feats,
+                 attention_feats,
+                 num_heads,
+                 feat_drop=0.,
+                 attn_drop=0.,
+                 negative_slope=0.2,
+                 activation=None,
+                 allow_zero_in_degree=False,
+                 bias=True):
+        super(HEARConv, self).__init__()
         self.aggregator = aggregator
+        self._num_heads = num_heads
+        self._in_src_feats, self._in_dst_feats = dgl.utils.expand_as_pair(in_feats)
+        self._out_feats = attention_feats
+        self._allow_zero_in_degree = allow_zero_in_degree
+        self.fc_src = nn.Linear(
+            self._in_src_feats, attention_feats * num_heads, bias=bias)
+        if self.aggregator == 'narre':
+            self.node_quality = nn.Embedding(n_nodes, self._in_dst_feats)
+            self.fc_qual = nn.Linear(self._in_dst_feats, attention_feats * num_heads, bias=bias)
+        self.attn = nn.Parameter(torch.FloatTensor(size=(1, num_heads, attention_feats)))
+        self.feat_drop = nn.Dropout(feat_drop)
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.leaky_relu = nn.LeakyReLU(negative_slope)
+        self.activation = activation
+        self.bias = bias
 
     def forward(self, graph, feat, get_attention=False):
         r"""
@@ -83,28 +109,21 @@ class HEARConv(dgl.nn.GATv2Conv):
                                    'to be `True` when constructing this module will '
                                    'suppress the check and let the code run.')
 
-            if isinstance(feat, tuple):
-                h_src = self.feat_drop(feat[0])
-                h_dst = self.feat_drop(feat[1])
-                feat_src = self.fc_src(h_src).view(-1, self._num_heads, self._out_feats)
-                feat_dst = self.fc_dst(h_dst).view(-1, self._num_heads, self._out_feats)
-            else:
-                h_src = h_dst = self.feat_drop(feat)
-                feat_src = self.fc_src(h_src).view(
-                    -1, self._num_heads, self._out_feats)
-                if self.share_weights:
-                    feat_dst = feat_src
-                else:
-                    feat_dst = self.fc_dst(h_src).view(
-                        -1, self._num_heads, self._out_feats)
-                if graph.is_block:
-                    feat_dst = feat_dst[:graph.number_of_dst_nodes()]
-                    h_dst = h_dst[:graph.number_of_dst_nodes()]
+            h_src = self.feat_drop(feat)
+            feat_src = self.fc_src(h_src).view(-1, self._num_heads, self._out_feats)
             graph.srcdata.update({'el': feat_src})# (num_src_edge, num_heads, out_dim)
-            graph.dstdata.update({'er': feat_dst})
-            graph.apply_edges(dgl.function.u_add_v('el', 'er', 'e'))
+
+            if self.aggregator == 'narre':
+                h_qual = self.node_quality(graph.edata['nid'])
+                feat_qual = self.fc_qual(h_qual).view(-1, self._num_heads, self._out_feats)
+                graph.edata.update({'qual': feat_qual})
+                graph.apply_edges(dgl.function.u_add_e('el', 'qual', 'e'))
+            else:
+                graph.apply_edges(dgl.function.copy_u('el', 'e'))
+
             e = self.leaky_relu(graph.edata.pop('e'))# (num_src_edge, num_heads, out_dim)
             e = (e * self.attn).sum(dim=-1).unsqueeze(dim=2)# (num_edge, num_heads, 1)
+
             # compute softmax
             graph.edata['a'] = self.attn_drop(edge_softmax(graph, e)) # (num_edge, num_heads)
 
@@ -115,10 +134,7 @@ class HEARConv(dgl.nn.GATv2Conv):
             graph.update_all(dgl.function.u_mul_e('el', 'a', 'm'),
                              dgl.function.sum('m', 'ft'))
             rst = graph.dstdata['ft']
-            # residual
-            if self.res_fc is not None:
-                resval = self.res_fc(h_dst).view(h_dst.shape[0], -1, self._out_feats)
-                rst = rst + resval
+
             # activation
             if self.activation:
                 rst = self.activation(rst)
@@ -142,21 +158,14 @@ class Model(nn.Module):
         self.num_heads = num_heads
         self.node_embedding = nn.Embedding(n_nodes, node_dim)
         self.review_conv = HypergraphLayer(node_dim, review_dim)
-        self.review_agg = HEARConv(aggregator, review_dim, final_dim, num_heads,
+        self.review_agg = HEARConv(aggregator, n_nodes, review_dim, final_dim, num_heads,
                                    feat_drop=layer_dropout[1], attn_drop=attention_dropout)
 
         self.node_dropout = nn.Dropout(layer_dropout[0])
 
         if aggregator == 'narre':
-            self.node_quality = nn.Embedding(n_nodes, review_dim)
+            # self.node_quality = nn.Embedding(n_nodes, review_dim)
             self.w_0 = nn.Linear(review_dim, final_dim)
-        else:
-            # Ignore dst during propagation as we have no dst embeddings.
-            fc = self.review_agg.fc_dst
-            torch.nn.init.zeros_(fc.weight)
-            fc.weight.requires_grad = False
-            torch.nn.init.zeros_(fc.bias)
-            fc.bias.requires_grad = False
 
         if predictor == 'narre':
             self.node_preference = nn.Embedding(n_nodes, final_dim)
@@ -177,13 +186,6 @@ class Model(nn.Module):
         x = self.node_dropout(x)
         x = self.review_conv(blocks[0], x)
 
-        if self.aggregator == 'narre':
-            g = blocks[1]
-            x = (
-                x[g.srcnodes['review'].data[dgl.NID]],
-                self.node_quality(g.dstnodes['node'].data[dgl.NID])
-            )
-
         x = self.review_agg(blocks[1], x)
         x = x.sum(1)
 
@@ -192,61 +194,27 @@ class Model(nn.Module):
 
         return x
 
-    def e_dot_e(self, lhs_field, rhs_field, out):
-        def func(edges):
-            u, v = edges.data[lhs_field], (edges.data[rhs_field])
-            o = (u * v).sum(-1)
-            return {out: o.unsqueeze(-1)}
-        return func
-
-    def e_mul_e(self, lhs_field, rhs_field, out):
-        def func(edges):
-            u, v = edges.data[lhs_field], (edges.data[rhs_field])
-            o = u * v
-            return {out: o}
-        return func
-
-    def graph_predict_dot(self, g: dgl.DGLGraph, x):
+    def _graph_predict_dot(self, g: dgl.DGLGraph, x):
         with g.local_scope():
-            if self.aggregator != 'narre':
-                g.ndata['h'] = x
-                g.apply_edges(dgl.function.u_dot_v('h', 'h', 'm'))
-            else:
-                x = x.reshape(128, 2, -1)
-                g.edata['u'] = x[:, 0]
-                g.edata['v'] = x[:, 1]
-                g.apply_edges(self.e_mul_e('u', 'v', 'm'))
+            g.ndata['h'] = x
+            g.apply_edges(dgl.function.u_dot_v('h', 'h', 'm'))
 
             return g.edata['m']
 
-    def graph_predict_narre(self, g: dgl.DGLGraph, x):
+    def _graph_predict_narre(self, g: dgl.DGLGraph, x):
         with g.local_scope():
-            if self.aggregator != 'narre':
-                g.ndata['h'] = x + self.node_preference(g.ndata[dgl.NID])
-                g.apply_edges(dgl.function.u_mul_v('h', 'h', 'm'))
-            else:
-                x = x.reshape(128, 2, -1)
-                u, v = g.edges()
-                g.edata['u'] = x[:, 0] + self.node_preference(g.ndata[dgl.NID][u])
-                g.edata['v'] = x[:, 1] + self.node_preference(g.ndata[dgl.NID][v])
-                g.apply_edges(self.e_mul_e('u', 'v', 'm'))
+            g.ndata['h'] = x + self.node_preference(g.ndata[dgl.NID])
+            g.apply_edges(dgl.function.u_mul_v('h', 'h', 'm'))
 
             return self.w_1(g.edata['m'])
 
     def graph_predict(self, g: dgl.DGLGraph, x):
         if self.predictor == 'dot':
-            return self.graph_predict_dot(g, x)
+            return self._graph_predict_dot(g, x)
         elif self.predictor == 'narre':
-            return self.graph_predict_narre(g, x)
+            return self._graph_predict_narre(g, x)
         else:
             raise ValueError(f'Predictor not implemented for "{self.predictor}".')
-
-    def _create_predict_graph(self, node, node_review_graph):
-        u, v = node_review_graph.in_edges(node)
-        g = dgl.to_block(dgl.graph((u, v)))
-        embs = (self.review_embs[g.srcdata[dgl.NID]],
-                self.node_quality(g.dstdata[dgl.NID]))
-        return g, embs
 
     def review_representation(self, g, x):
         return self.review_conv(g, x)
@@ -260,27 +228,20 @@ class Model(nn.Module):
 
         return x
 
-    def predict_dot(self, u_emb, i_emb):
+    def _predict_dot(self, u_emb, i_emb):
         return u_emb.dot(i_emb)
 
-    def predict_narre(self, user, item, u_emb, i_emb):
+    def _predict_narre(self, user, item, u_emb, i_emb):
         h = (u_emb + self.node_preference(user)) * (i_emb + self.node_preference(item))
         return self.w_1(h)
 
-    def predict(self, user, item, node_review_graph):
-        if self.aggregator == 'narre':
-            u_g, u_emb = self._create_predict_graph(user, node_review_graph)
-            i_g, i_emb = self._create_predict_graph(item, node_review_graph)
-            u_emb = self.review_aggregation(u_g, u_emb)
-            i_emb = self.review_aggregation(i_g, i_emb)
-            u_emb, i_emb = u_emb.squeeze(0), i_emb.squeeze(0)
-        else:
-            u_emb, i_emb = self.inf_emb[user], self.inf_emb[item]
+    def predict(self, user, item):
+        u_emb, i_emb = self.inf_emb[user], self.inf_emb[item]
 
         if self.predictor == 'dot':
-            pred = self.predict_dot(u_emb, i_emb)
+            pred = self._predict_dot(u_emb, i_emb)
         elif self.predictor == 'narre':
-            pred = self.predict_narre(user, item, u_emb, i_emb)
+            pred = self._predict_narre(user, item, u_emb, i_emb)
         else:
             raise ValueError(f'Predictor not implemented for "{self.predictor}".')
 
@@ -314,17 +275,15 @@ class Model(nn.Module):
             input_nodes, batched_graph, indices = input_nodes.to(device), batched_graph.to(device), indices.to(device)
             self.review_embs[indices] = self.review_representation(batched_graph, self.node_embedding(input_nodes))
 
-        # Narre's predictor cannot be precalculated
-        if self.aggregator != 'narre':
-            # Node inference setup
-            indices = {'node': node_review_graph.nodes('node')}
-            sampler = dgl.dataloading.MultiLayerFullNeighborSampler(1)
-            dataloader = dgl.dataloading.DataLoader(node_review_graph, indices, sampler, batch_size=1024, shuffle=False,
-                                                    drop_last=False, device=device)
+        # Node inference setup
+        indices = {'node': node_review_graph.nodes('node')}
+        sampler = dgl.dataloading.MultiLayerFullNeighborSampler(1)
+        dataloader = dgl.dataloading.DataLoader(node_review_graph, indices, sampler, batch_size=1024, shuffle=False,
+                                                drop_last=False, device=device)
 
-            self.inf_emb = torch.zeros((torch.max(indices['node'])+1, self.review_agg._out_feats)).to(device)
+        self.inf_emb = torch.zeros((torch.max(indices['node'])+1, self.review_agg._out_feats)).to(device)
 
-            # Node inference
-            for input_nodes, output_nodes, blocks in dataloader:
-                x = self.review_aggregation(blocks[0]['part_of'], self.review_embs[input_nodes['review']])
-                self.inf_emb[output_nodes['node']] = x
+        # Node inference
+        for input_nodes, output_nodes, blocks in dataloader:
+            x = self.review_aggregation(blocks[0]['part_of'], self.review_embs[input_nodes['review']])
+            self.inf_emb[output_nodes['node']] = x

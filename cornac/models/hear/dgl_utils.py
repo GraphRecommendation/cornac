@@ -18,9 +18,6 @@ class HEAREdgeSampler(dgl.dataloading.EdgePredictionSampler):
         If :attr:`negative_sampler` is given, also returns another graph containing the
         negative pairs as edges.
         """
-        # sg = dgl.sampling.sample_neighbors(g, seed_edges, 1)
-        # seed_edges = sg.edata[dgl.EID]
-
         if isinstance(seed_edges, Mapping):
             seed_edges = {g.to_canonical_etype(k): v for k, v in seed_edges.items()}
         exclude = self.exclude
@@ -73,61 +70,68 @@ class HearBlockSampler(dgl.dataloading.NeighborSampler):
         self.compact = compact
 
     def sample(self, g, seed_nodes, exclude_eids=None, pair_graph=None):
+        # If exclude eids, find the equivalent eid of the node_review_graph.
         if exclude_eids is not None:
             u, v = g.find_edges(exclude_eids)
-            rid = g.edata['rid'][exclude_eids]
-            exclude_eids = self.node_review_graph.edge_ids(rid, u, etype='part_of')
-        g2 = g
+            sid = g.edata['sid'][exclude_eids]
+            exclude_eids = self.node_review_graph.edge_ids(sid, u, etype='part_of')
 
+        # Based on seed_nodes, find reviews to represent the nodes.
         input_nodes, output_nodes, blocks = super().sample(self.node_review_graph, {'node': seed_nodes}, exclude_eids)
-        b = blocks[0]
+        block = blocks[0]
 
-        narre_flag = pair_graph is not None and self.aggregator == 'narre'
+        # narre_flag = pair_graph is not None and self.aggregator == 'narre'
 
-        # If narre have graph with ui to rid.
-        if narre_flag:
-            u, v = pair_graph.edges()
-            org = pair_graph.ndata[dgl.NID]
-            u, v = org[u], org[v]
-            graphs = []
-            for org_user, org_item in zip(u,v):
-                srcs, dsts = [], []
-                info = []
-                nids = b.dstnodes('node')
-                user = nids[b.dstnodes['node'].data[dgl.NID] == org_user][0]
-                item = nids[b.dstnodes['node'].data[dgl.NID] == org_item][0]
+        # If narre, build a batch of graphs, with each graph being a user-item pair.
+        # if narre_flag:
+        #     # Get original user and item node ids.
+        #     u, v = pair_graph.edges()
+        #     org = pair_graph.ndata[dgl.NID]
+        #     u, v = org[u], org[v]
+        #
+        #     # Construct graphs
+        #     graphs = []
+        #     for org_user, org_item in zip(u,v):
+        #         srcs, dsts = [], []
+        #         info = []
+        #
+        #         # Get equivalent node-id in block.
+        #         nids = block.dstnodes('node')
+        #         user = nids[block.dstnodes['node'].data[dgl.NID] == org_user][0]
+        #         item = nids[block.dstnodes['node'].data[dgl.NID] == org_item][0]
+        #
+        #         # Get in edges for user and item and add to current graph.
+        #         for nid, related in [[user, item], [item, user]]:
+        #             src, dst = block.in_edges(nid)
+        #             srcs.append(src)
+        #             dsts.append(dst)
+        #             info.append(torch.full((len(src),), related))
+        #
+        #         srcs, dsts = torch.cat(srcs), torch.cat(dsts)
+        #
+        #         # Assign unique node-id to each review.
+        #         g = dgl.heterograph(
+        #             {('review', 'part_of', 'node'): (torch.arange(len(srcs)), dsts)},
+        #             num_nodes_dict={ntype: block.num_nodes(ntype=ntype) for ntype in block.ntypes}
+        #         )
+        #
+        #         # Reduce graph complexity.
+        #         g = dgl.compact_graphs(g)
+        #
+        #         # Assign different attributes.
+        #         info = torch.cat(info)
+        #         g.srcnodes['review'].data[dgl.NID] = srcs
+        #         g.srcnodes['review'].data['nid'] = info
+        #         g.dstnodes['node'].data[dgl.NID] = torch.LongTensor([org_user, org_item])
+        #
+        #         graphs.append(g)
 
-                for nid, related in [[user, item], [item, user]]:
-                    src, dst = b.in_edges(nid)
-                    srcs.append(src)
-                    dsts.append(dst)
-                    info.append(torch.full((len(src),), related))
+        block = block['part_of']
+        blocks[0] = block
 
-                srcs, dsts = torch.cat(srcs), torch.cat(dsts)
-                assert len(srcs)
-                assert len(dsts)
-                assert len(srcs) == len(dsts)
+        assert torch.all(block.in_degrees(block.dstnodes()) != 0)
 
-                g = dgl.heterograph(
-                    {('review', 'part_of', 'node'): (torch.arange(len(srcs)), dsts)},
-                    num_nodes_dict={ntype: b.num_nodes(ntype=ntype) for ntype in b.ntypes}
-                )
-
-                g = dgl.compact_graphs(g)
-
-                info = torch.cat(info)
-                g.srcnodes['review'].data[dgl.NID] = srcs
-                g.srcnodes['review'].data['nid'] = info
-                g.dstnodes['node'].data[dgl.NID] = torch.LongTensor([org_user, org_item])
-
-                graphs.append(g)
-
-        b = b['part_of']
-        blocks[0] = b
-
-        assert torch.all(b.in_degrees(b.dstnodes()) != 0)
-
-        r_gs = [self.review_graphs[rid] for rid in b.srcdata[dgl.NID].cpu().numpy()]
+        r_gs = [self.review_graphs[sid] for sid in block.srcdata[dgl.NID].cpu().numpy()]
         if self.compact:
             r_gs = dgl.compact_graphs(r_gs)
             nid = [bg.ndata[dgl.NID] for bg in r_gs]
@@ -143,9 +147,9 @@ class HearBlockSampler(dgl.dataloading.NeighborSampler):
         blocks.insert(0, batch)
         input_nodes = nid
 
-        if narre_flag:
-            bg = dgl.batch(graphs)
-            blocks[1] = bg
+        # if narre_flag:
+        #     bg = dgl.batch(graphs)
+        #     blocks[1] = bg
 
         return input_nodes, output_nodes, blocks
 

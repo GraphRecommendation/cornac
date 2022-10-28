@@ -88,15 +88,15 @@ class HEAR(Recommender):
         user_item_review_map = {(uid + n_items, iid): rid for uid, irid in sentiment_modality.user_sentiment.items()
                                 for iid, rid in irid.items()}
         review_edges = []
-        for uid, irid in tqdm(sentiment_modality.user_sentiment.items(), desc='Creating review graphs',
+        for uid, isid in tqdm(sentiment_modality.user_sentiment.items(), desc='Creating review graphs',
                               total=len(sentiment_modality.user_sentiment)):
             uid += n_items
 
-            for iid, rid in irid.items():
-                review_edges.extend([[rid, uid], [rid, iid]])
+            for iid, sid in isid.items():
+                review_edges.extend([[sid, uid], [sid, iid]])
                 edges = []
                 a_o_count = defaultdict(int)
-                aos = sentiment_modality.sentiment[rid]
+                aos = sentiment_modality.sentiment[sid]
                 for aid, oid, _ in aos:
                     aid += n_items + n_users
                     oid += n_items + n_users + n_aspects
@@ -130,18 +130,24 @@ class HEAR(Recommender):
 
                 assert len(edges) * 2 == g.num_edges()
 
-                self.review_graphs[rid] = g
+                self.review_graphs[sid] = g
 
         # Create training graph, i.e. user to item graph.
         edges = [(uid + n_items, iid, train_set.matrix[uid, iid]) for uid, iid in zip(*train_set.matrix.nonzero())]
         t_edges = torch.LongTensor(edges).T
         self.train_graph = dgl.graph((t_edges[0], t_edges[1]))
-        self.train_graph.edata['rid'] = torch.LongTensor([user_item_review_map[(u, i)] for (u, i, r) in edges])
+        self.train_graph.edata['sid'] = torch.LongTensor([user_item_review_map[(u, i)] for (u, i, r) in edges])
         self.train_graph.edata['label'] = t_edges[2].to(torch.float)
 
         # Create user/item to review graph.
         edges = torch.LongTensor(review_edges).T
         self.node_review_graph = dgl.heterograph({('review', 'part_of', 'node'): (edges[0], edges[1])})
+
+        # Assign edges node_ids s.t. an edge from user to review has the item nid its about.
+        self.node_review_graph.edata['nid'] = torch.LongTensor(self.node_review_graph.num_edges())
+        _, v, eids = self.node_review_graph.edges(form='all')
+        self.node_review_graph.edata['nid'][eids % 2 == 0] = v[eids % 2 == 1]
+        self.node_review_graph.edata['nid'][eids % 2 == 1] = v[eids % 2 == 0]
 
         return n_nodes
 
@@ -159,6 +165,9 @@ class HEAR(Recommender):
                            self.review_dim, self.final_dim, self.num_heads, self.layer_dropout, self.attention_dropout)
 
         self.model.reset_parameters()
+
+        print(sum(p.numel() for p in self.model.parameters()))
+
         if self.use_cuda:
             self.model = self.model.cuda()
             prefetch = ['label']
@@ -230,21 +239,16 @@ class HEAR(Recommender):
                                                  f'RMSE: {rmse:.5f}')
 
         _ = self._validate(val_set)
-        self.node_review_graph = self.node_review_graph.to(self.device)
 
     def _validate(self, val_set):
         from ...eval_methods.base_method import rating_eval
         from ...metrics import MSE, RMSE
         import torch
-        d = self.node_review_graph.device
-        self.node_review_graph = self.node_review_graph.to(self.device)
 
         self.model.eval()
         with torch.no_grad():
             self.model.inference(self.review_graphs, self.node_review_graph, self.device)
             ((mse, rmse), _) = rating_eval(self, [MSE(), RMSE()], val_set, user_based=self.user_based)
-
-        self.node_review_graph = self.node_review_graph.to(d)
         return mse, rmse
 
     def score(self, user_idx, item_idx=None):
@@ -254,7 +258,7 @@ class HEAR(Recommender):
         with torch.no_grad():
             user_idx = torch.tensor(user_idx + self.n_items, dtype=torch.int64).to(self.device)
             item_idx = torch.tensor(item_idx, dtype=torch.int64).to(self.device)
-            return self.model.predict(user_idx, item_idx, self.node_review_graph).cpu()
+            return self.model.predict(user_idx, item_idx).cpu()
 
     def monitor_value(self):
         pass
