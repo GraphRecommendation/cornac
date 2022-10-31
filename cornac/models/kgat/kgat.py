@@ -8,6 +8,8 @@ from torch import nn
 # Based on https://github.com/LunaBlack/KGAT-pytorch/blob/e7305c3e80fb15fa02b3ec3993ad3a169b34ce64/model/KGAT.py#L13
 from tqdm import tqdm
 
+from cornac.models.kgat import dgl_utils
+
 
 class KGATLayer(nn.Module):
     def __init__(self, in_dim, out_dim, dropout, mode='bi-interaction', propagation_mode='attention'):
@@ -86,6 +88,9 @@ class Model(nn.Module):
 
         self.layers = layers
 
+        self._trans_r_loss_fn = torch.nn.LogSigmoid()
+        self._loss_fn = torch.nn.MSELoss()
+
         # sampler = dgl.dataloading.neighbor.MultiLayerFullNeighborSampler(3)
         # self.collator = dgl.dataloading.NodeCollator(graph, graph.nodes(), sampler)
 
@@ -109,24 +114,30 @@ class Model(nn.Module):
         # Calculate plausibilty score, equation 1
         return {'ps': torch.norm(head + relation - tail, 2, dim=1).pow(2)}
 
-    def trans_r(self, g: dgl.DGLGraph):
+    def trans_r(self, g: dgl.DGLGraph, x):
         with g.local_scope():
-            g.ndata['emb'] = self.node_embedding(g.nodes())
+            g.ndata['emb'] = x
 
             g.apply_edges(self._trans_r_fn)
 
             return g.edata['ps']
 
-    def l2_loss(self, pos_graph, neg_graph, embeddings, trans_r=False):
-        users, items_i = pos_graph.edges()
-        _, items_j = neg_graph.edges()
+    def trans_r_loss(self, pos_emb, neg_emb):
+        return - self._trans_r_loss_fn(neg_emb - pos_emb).mean()
+
+    def l2_loss(self, g, embeddings, trans_r=False, neg_graph=None):
+        users, items_i = g.edges()
         loss = embeddings[users].pow(2).norm(2) + \
-               embeddings[items_i].pow(2).norm(2) + \
-               embeddings[items_j].pow(2).norm(2)
+               embeddings[items_i].pow(2).norm(2)
+
+        if neg_graph is not None:
+            _, items_j = neg_graph.edges()
+            loss += embeddings[items_j].pow(2).norm(2)
 
         if trans_r:
-            loss += self.relation_embedding(pos_graph.edata['type']).pow(2).norm(2)
+            loss += self.relation_embedding(g.edata['type']).pow(2).norm(2)
 
+        # Average by batch size.
         loss /= len(users)
 
         return loss
@@ -141,20 +152,20 @@ class Model(nn.Module):
         # Calculate attention
         return {'a': torch.sum(tail * self.tanh(head + relation), dim=-1)}
 
-    def compute_attention(self, g: dgl.DGLGraph):
+    def compute_attention(self, g: dgl.DGLGraph, batch_size, verbose=True):
         device = self.W_r.device
         with g.local_scope():
-            sampler = dgl.dataloading.NeighborSampler([1])
+            sampler = dgl_utils.TransRSampler()
             sampler = dgl.dataloading.as_edge_prediction_sampler(
                 sampler, prefetch_labels=['type']
             )
             dataloader = dgl.dataloading.DataLoader(
-                g, g.edges(form='eid').to(device), sampler,
-                shuffle=True, drop_last=False, use_uva=self.use_cuda, device=device, batch_size=8192
+                g, g.edges(form='eid'), sampler,
+                shuffle=False, drop_last=False, device=device, batch_size=batch_size
             )
             attention = torch.zeros(len(g.edges('eid')), device=device)
 
-            for input_nodes, batched_g, _ in tqdm(dataloader):
+            for input_nodes, batched_g, _ in tqdm(dataloader, disable=not verbose):
                 with batched_g.local_scope():
                     batched_g.ndata['emb'] = self.node_embedding(input_nodes)
 
@@ -164,40 +175,6 @@ class Model(nn.Module):
 
             g.edata['a'] = attention.to(g.device)
             return edge_softmax(g, g.edata['a'])
-
-    def _gates(self, edges):
-        r = edges.data['type']
-        relation = self.relation_embedding(r)
-
-        tail = torch.bmm(edges.src['emb'].unsqueeze(1), self.W_r[r]).squeeze()
-        head = torch.bmm(edges.dst['emb'].unsqueeze(1), self.W_r[r]).squeeze()
-
-        out = head.matmul(self.gate_head_weight) + tail.matmul(self.gate_tail_weight) + \
-              relation.matmul(self.gate_relation_weight) + self.gate_bias
-
-        return {'g': self.sigmoid(out)}
-
-    def compute_gates(self, g: dgl.DGLGraph):
-        dataloader = dgl.dataloading.EdgeDataLoader(g, g.edges('eid'),
-                                                    dgl.dataloading.MultiLayerFullNeighborSampler(1, return_eids=True),
-                                                    batch_size=1024, drop_last=False)
-
-        gates = torch.zeros((len(g.edges('eid')), self.W_r.shape[-1]), device=self.W_r.device)
-
-        for input_nodes, batched_g, blocks in dataloader:
-            if self.use_cuda:
-                batched_g = batched_g.to('cuda:0')
-
-            with batched_g.local_scope():
-                batched_g.ndata['emb'] = self.node_embedding(batched_g.nodes())
-
-                batched_g.apply_edges(self._gates)
-
-                gates[batched_g.edata[dgl.EID]] = batched_g.edata['g']
-
-        with g.local_scope():
-            g.edata['g'] = gates.cpu()
-            return edge_softmax(g, g.edata['g'])
 
     def forward(self, blocks, x):
         output_nodes = blocks[-1].dstdata[dgl.NID]
@@ -211,17 +188,23 @@ class Model(nn.Module):
 
         return torch.cat(embs, dim=1)
 
-    def predict(self, g: dgl.DGLGraph, embeddings):
+    def graph_predict(self, g: dgl.DGLGraph, embeddings):
         with g.local_scope():
             users, items = g.edges()
 
             return (embeddings[users] * embeddings[items]).sum(dim=1)
 
-    def store_embeddings(self, g):
+    def loss(self, preds, target):
+        return self._loss_fn(preds, target)
+
+    def inference(self, g, x, device):
         blocks = [dgl.to_block(g) for _ in self.layers]  # full graph propagations
 
-        if self.use_cuda:
-            blocks = [b.to('cuda:0') for b in blocks]
+        blocks = [b.to(device) for b in blocks]
 
-        self.embeddings = self.embedder(blocks)
+        self.embeddings = self(blocks, x)
+
+    def predict(self, user, item):
+        u_emb, i_emb = self.embeddings[user], self.embeddings[item]
+        return u_emb.dot(i_emb)
 

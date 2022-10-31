@@ -10,7 +10,7 @@ from ...data import Dataset
 
 
 class KGAT(Recommender):
-    def __init__(self, name='HEAR', use_cuda=False, use_uva=False,
+    def __init__(self, name='KGAT', use_cuda=False, use_uva=False,
                  batch_size=128,
                  num_workers=0,
                  num_epochs=10,
@@ -131,11 +131,15 @@ class KGAT(Recommender):
                                      for i, k in sorted(id_et_map.items())]).T
         g.edata['type'] = type_label[0]
 
-        g.edata['label'] = type_label[1]
+        g.edata['label'] = type_label[1].to(torch.float)
 
         self.train_graph = g
 
         return n_nodes, n_relations
+
+    def set_attention(self, g, verbose=True):
+        with torch.no_grad():
+            g.edata['a'] = self.model.compute_attention(g, self.batch_size, verbose=verbose).pin_memory()
 
     def fit(self, train_set: Dataset, val_set=None):
         from .kgat import Model
@@ -191,9 +195,10 @@ class KGAT(Recommender):
 
         # Create samplers
         # TransR sampler
-        sampler = dgl.dataloading.NeighborSampler([1])
-        sampler = dgl.dataloading.as_edge_prediction_sampler(sampler)
-        tranr_dataloader = dgl.dataloading.DataLoader(g, tr_edges, batch_size=self.batch_size, shuffle=True,
+        sampler = dgl_utils.TransRSampler()
+        neg_sampler = dgl.dataloading.negative_sampler.PerSourceUniform(1)
+        sampler = dgl.dataloading.as_edge_prediction_sampler(sampler, negative_sampler=neg_sampler)
+        tranr_dataloader = dgl.dataloading.DataLoader(g, tr_edges, sampler, batch_size=self.batch_size*3, shuffle=True,
                                                       drop_last=True, device=self.device, use_uva=self.use_uva,
                                                       num_workers=num_workers, use_prefetch_thread=thread)
 
@@ -205,47 +210,71 @@ class KGAT(Recommender):
                                                 num_workers=num_workers, use_prefetch_thread=thread)
 
         # Initialize training params.
-        optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
+        tr_optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
+        cf_optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
         length = len(cf_dataloader)
 
         best_state = None
         best_score = float('inf')
         for e in range(self.num_epochs):
+            tot_tr = 0
             tot_mse = 0
-            # tot_l2 = 0
-            # tot_loss = 0
+            tot_l2 = 0
+            tot_loss = 0
 
             # TransR
             with tqdm(tranr_dataloader) as progress:
-                for i, (input_nodes, edge_subgraph, blocks) in enumerate(progress, 1):
-                    x = self.model.trans_r(edge_subgraph)
+                for i, (input_nodes, pos_subgraph, neg_subgraph, blocks) in enumerate(progress, 1):
+                    x = self.model.node_embedding(input_nodes)
+                    neg_subgraph.edata['type'] = pos_subgraph.edata['type']
 
+                    pos_x = self.model.trans_r(pos_subgraph, x)
+                    neg_x = self.model.trans_r(neg_subgraph, x)
+                    loss = self.model.trans_r_loss(pos_x, neg_x)
+                    loss += self.weight_decay * self.model.l2_loss(pos_subgraph, x, trans_r=True,
+                                                                   neg_graph=neg_subgraph)
+                    loss.backward()
+
+                    tr_optimizer.step()
+                    tr_optimizer.zero_grad()
+
+                    tot_tr += loss.detach()
+
+                    progress.set_description(f'Epoch {e}, '
+                                             f'Loss: {tot_tr / i:.5f}')
+
+            self.model.eval()
+            self.set_attention(g)
+            self.model.train()
 
             # CF
             with tqdm(cf_dataloader) as progress:
                 for i, (input_nodes, edge_subgraph, blocks) in enumerate(progress, 1):
-                    x = self.model(blocks, self.model.node_embedding(input_nodes))
+                    emb = self.model.node_embedding(input_nodes)
+                    x = self.model(blocks, emb)
 
                     pred = self.model.graph_predict(edge_subgraph, x)
 
                     mse_loss = self.model.loss(pred, edge_subgraph.edata['label'])
-                    # l2_loss = self.weight_decay * self.model.l2_loss(input_nodes)
-                    loss = mse_loss  # + l2_loss
+                    l2_loss = self.weight_decay * self.model.l2_loss(edge_subgraph, emb)
+                    loss = mse_loss + l2_loss
                     loss.backward()
 
                     tot_mse += mse_loss.detach()
-                    # tot_l2 += l2_loss.detach()
-                    # tot_loss += loss.detach()
+                    tot_l2 += l2_loss.detach()
+                    tot_loss += loss.detach()
 
-                    optimizer.step()
-                    optimizer.zero_grad()
+                    cf_optimizer.step()
+                    cf_optimizer.zero_grad()
+
                     if i != length or val_set is None:
                         progress.set_description(f'Epoch {e}, '
-                                                 f'MSE: {tot_mse / i:.5f}'
-                                                 # f', L2: {tot_l2 / i:.5f}'
-                                                 # f', Tot: {tot_loss / i:.5f}'
+                                                 f'MSE:{tot_mse / i:.5f}'
+                                                 f',L2:{tot_l2 / i:.3g}'
+                                                 f',Tot:{tot_loss / i:.5f}'
                                                  )
                     else:
+                        self.set_attention(g, verbose=False)
                         mse, rmse = self._validate(val_set)
                         progress.set_description(f'Epoch {e}, MSE: {tot_mse / i:.5f}, Val: MSE: {mse:.5f}, '
                                                  f'RMSE: {rmse:.5f}')
@@ -256,6 +285,7 @@ class KGAT(Recommender):
 
         if best_state is not None:
             self.model.load_state_dict(best_state)
+            self.set_attention(g)
 
         _ = self._validate(val_set)
 
@@ -266,7 +296,8 @@ class KGAT(Recommender):
 
         self.model.eval()
         with torch.no_grad():
-            self.model.inference(self.review_graphs, self.node_review_graph, self.device)
+            x = self.model.node_embedding(self.train_graph.nodes().to(self.device))
+            self.model.inference(self.train_graph, x, self.device)
             ((mse, rmse), _) = rating_eval(self, [MSE(), RMSE()], val_set, user_based=self.user_based)
         return mse, rmse
 

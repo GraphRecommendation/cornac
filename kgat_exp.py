@@ -66,7 +66,7 @@ def run():
                                layer_dropout=[.5, .5],
                                attention_dropout=.1,
                                user_based=user_based,
-                               debug=True)
+                               debug=False)
 
     cornac.Experiment(
         eval_method=eval_method, models=[model], metrics=[cornac.metrics.MSE(), cornac.metrics.RMSE()],
