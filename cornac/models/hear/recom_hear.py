@@ -1,4 +1,5 @@
 from collections import Counter, defaultdict
+from copy import deepcopy
 from math import sqrt
 
 import torch
@@ -206,6 +207,9 @@ class HEAR(Recommender):
         # Initialize training params.
         optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
         length = len(dataloader)
+
+        best_state = None
+        best_score = float('inf')
         for e in range(self.num_epochs):
             tot_mse = 0
             # tot_l2 = 0
@@ -237,6 +241,13 @@ class HEAR(Recommender):
                         mse, rmse = self._validate(val_set)
                         progress.set_description(f'Epoch {e}, MSE: {tot_mse / i:.5f}, Val: MSE: {mse:.5f}, '
                                                  f'RMSE: {rmse:.5f}')
+
+                        if self.model_selection == 'best' and mse < best_score:
+                            best_state = deepcopy(self.model.state_dict())
+                            best_score = mse
+
+        if best_state is not None:
+            self.model.load_state_dict(best_state)
 
         _ = self._validate(val_set)
 
