@@ -38,6 +38,7 @@ from .hear import HEAR
 from .hft import HFT
 from .hpf import HPF
 from .ibpr import IBPR
+from .kgat import KGAT
 from .knn import ItemKNN
 from .knn import UserKNN
 from .mcf import MCF
