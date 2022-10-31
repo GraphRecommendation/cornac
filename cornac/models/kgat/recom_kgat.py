@@ -24,6 +24,7 @@ class KGAT(Recommender):
                  tr_feat_droout=0.5,
                  layer_dropouts=None,
                  edge_dropouts=None,
+                 normalize=False,
                  user_based=True,
                  debug=False
                  ):
@@ -56,6 +57,7 @@ class KGAT(Recommender):
         self.tr_feat_droout = tr_feat_droout
         self.layer_dropouts = layer_dropouts
         self.edge_dropouts = edge_dropouts
+        self.normalize = normalize
 
         # Method
         self.train_graph = None

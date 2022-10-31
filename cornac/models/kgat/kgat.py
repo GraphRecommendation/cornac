@@ -52,14 +52,15 @@ class KGATLayer(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, n_nodes, n_relations, node_dim, relation_dim,
-                 n_layers, layer_dims, tr_dropout=0, dropouts=None, edge_dropouts=None):
+    def __init__(self, n_nodes, n_relations, node_dim, relation_dim, n_layers, layer_dims, tr_dropout=0, dropouts=None,
+                 edge_dropouts=None, normalize=False):
         super(Model, self).__init__()
 
         if dropouts is None:
             dropouts = [0 for _ in layer_dims]
         if edge_dropouts is None:
             edge_dropouts = [0 for _ in layer_dims]
+        self.normalize = normalize
 
         # Define embedding
         self.node_embedding = nn.Embedding(n_nodes, node_dim)
@@ -176,7 +177,12 @@ class Model(nn.Module):
         embs = [x[:n_out]]
         for block, layer in iterator:
             x = layer(block, x)
-            n_emb = x / x.norm(dim=1, keepdim=True)
+
+            if self.normalize:
+                n_emb = x / x.norm(dim=1, keepdim=True)
+            else:
+                n_emb = x
+
             embs.append(n_emb[:n_out])
 
         return torch.cat(embs, dim=1)
