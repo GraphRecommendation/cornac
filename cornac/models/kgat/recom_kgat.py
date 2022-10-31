@@ -15,24 +15,26 @@ class KGAT(Recommender):
                  num_workers=0,
                  num_epochs=10,
                  learning_rate=0.1,
-                 weight_decay=0,
+                 l2_weight=0,
                  node_dim=64,
-                 review_dim=32,
-                 final_dim=16,
-                 num_heads=3,
-                 fanout=5,
+                 relation_dim=32,
+                 layer_dims=None,
                  model_selection='best',
-                 review_aggregator='narre',
-                 predictor='gatv2',
-                 layer_dropout=None,
-                 attention_dropout=.2,
+                 early_stopping=None,
+                 tr_feat_droout=0.5,
+                 layer_dropouts=None,
+                 edge_dropouts=None,
                  user_based=True,
                  debug=False
                  ):
         super().__init__(name)
         # Default values
-        if layer_dropout is None:
-            layer_dropout = [0, 0]  # node embedding dropout, review embedding dropout
+        if layer_dims is None:
+            layer_dims = [32, 16, 16]
+        if layer_dropouts is None:
+            layer_dropouts = [0, 0, 0]  # node embedding dropout, review embedding dropout
+        if edge_dropouts is None:
+            edge_dropouts = [0, 0, 0]
 
         # CUDA
         self.use_cuda = use_cuda
@@ -44,17 +46,16 @@ class KGAT(Recommender):
         self.num_workers = num_workers
         self.num_epochs = num_epochs
         self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
+        self.l2_weight = l2_weight
         self.node_dim = node_dim
-        self.review_dim = review_dim
-        self.final_dim = final_dim
-        self.num_heads = num_heads
-        self.fanout = fanout
+        self.relation_dim = relation_dim
+        self.layer_dims = layer_dims
+        self.n_layers = len(layer_dims)
         self.model_selection = model_selection
-        self.review_aggregator = review_aggregator
-        self.predictor = predictor
-        self.layer_dropout = layer_dropout
-        self.attention_dropout = attention_dropout
+        self.early_stopping = early_stopping
+        self.tr_feat_droout = tr_feat_droout
+        self.layer_dropouts = layer_dropouts
+        self.edge_dropouts = edge_dropouts
 
         # Method
         self.train_graph = None
@@ -67,8 +68,9 @@ class KGAT(Recommender):
 
         # assertions
         assert use_uva == use_cuda or not use_uva, 'use_cuda must be true when using uva.'
-        assert len(layer_dropout) == 2, f'Length of dropout list must be 2 was {len(layer_dropout)}. ' \
-                                        f'First for node embedding dropout, second for review embedding dropout.'
+        assert len(layer_dims) == self.n_layers
+        assert len(layer_dropouts) == self.n_layers
+        assert len(edge_dropouts) == self.n_layers
 
     def _create_graphs(self, train_set: Dataset):
         import dgl
@@ -132,6 +134,7 @@ class KGAT(Recommender):
         g.edata['type'] = type_label[0]
 
         g.edata['label'] = type_label[1].to(torch.float)
+        g.edata['a'] = dgl.ops.edge_softmax(g, torch.ones_like(g.edata['label']))
 
         self.train_graph = g
 
@@ -151,7 +154,8 @@ class KGAT(Recommender):
         n_nodes, n_relations = self._create_graphs(train_set)  # graphs are as attributes of model.
 
         # create model
-        self.model = Model(n_nodes, n_relations, 64, 32, 3, [32, 16, 16])
+        self.model = Model(n_nodes, n_relations, self.node_dim, self.relation_dim, self.n_layers,
+                           self.layer_dims, self.tr_feat_droout, self.layer_dropouts, self.edge_dropouts)
 
         self.model.reset_parameters()
 
@@ -198,12 +202,12 @@ class KGAT(Recommender):
         sampler = dgl_utils.TransRSampler()
         neg_sampler = dgl.dataloading.negative_sampler.PerSourceUniform(1)
         sampler = dgl.dataloading.as_edge_prediction_sampler(sampler, negative_sampler=neg_sampler)
-        tranr_dataloader = dgl.dataloading.DataLoader(g, tr_edges, sampler, batch_size=self.batch_size*3, shuffle=True,
+        tr_dataloader = dgl.dataloading.DataLoader(g, tr_edges, sampler, batch_size=self.batch_size*3, shuffle=True,
                                                       drop_last=True, device=self.device, use_uva=self.use_uva,
                                                       num_workers=num_workers, use_prefetch_thread=thread)
 
         # CF sampler
-        sampler = dgl.dataloading.MultiLayerFullNeighborSampler(3)
+        sampler = dgl.dataloading.MultiLayerFullNeighborSampler(self.n_layers)
         sampler = dgl.dataloading.as_edge_prediction_sampler(sampler, exclude='reverse_id', reverse_eids=reverse_eids)
         cf_dataloader = dgl.dataloading.DataLoader(g, cf_eids, sampler, batch_size=self.batch_size, shuffle=True,
                                                 drop_last=True, device=self.device, use_uva=self.use_uva,
@@ -212,40 +216,16 @@ class KGAT(Recommender):
         # Initialize training params.
         tr_optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
         cf_optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
-        length = len(cf_dataloader)
+        length = len(tr_dataloader)
 
         best_state = None
         best_score = float('inf')
+        best_epoch = -1
         for e in range(self.num_epochs):
             tot_tr = 0
             tot_mse = 0
             tot_l2 = 0
             tot_loss = 0
-
-            # TransR
-            with tqdm(tranr_dataloader) as progress:
-                for i, (input_nodes, pos_subgraph, neg_subgraph, blocks) in enumerate(progress, 1):
-                    x = self.model.node_embedding(input_nodes)
-                    neg_subgraph.edata['type'] = pos_subgraph.edata['type']
-
-                    pos_x = self.model.trans_r(pos_subgraph, x)
-                    neg_x = self.model.trans_r(neg_subgraph, x)
-                    loss = self.model.trans_r_loss(pos_x, neg_x)
-                    loss += self.weight_decay * self.model.l2_loss(pos_subgraph, x, trans_r=True,
-                                                                   neg_graph=neg_subgraph)
-                    loss.backward()
-
-                    tr_optimizer.step()
-                    tr_optimizer.zero_grad()
-
-                    tot_tr += loss.detach()
-
-                    progress.set_description(f'Epoch {e}, '
-                                             f'Loss: {tot_tr / i:.5f}')
-
-            self.model.eval()
-            self.set_attention(g)
-            self.model.train()
 
             # CF
             with tqdm(cf_dataloader) as progress:
@@ -256,7 +236,7 @@ class KGAT(Recommender):
                     pred = self.model.graph_predict(edge_subgraph, x)
 
                     mse_loss = self.model.loss(pred, edge_subgraph.edata['label'])
-                    l2_loss = self.weight_decay * self.model.l2_loss(edge_subgraph, emb)
+                    l2_loss = self.l2_weight * self.model.l2_loss(edge_subgraph, emb)
                     loss = mse_loss + l2_loss
                     loss.backward()
 
@@ -267,12 +247,40 @@ class KGAT(Recommender):
                     cf_optimizer.step()
                     cf_optimizer.zero_grad()
 
+                    progress.set_description(f'Epoch {e}, '
+                                             f'MSE:{tot_mse / i:.5f}'
+                                             f',L2:{tot_l2 / i:.3g}'
+                                             f',Tot:{tot_loss / i:.5f}'
+                                             )
+
+            # TransR
+            tot_l2 = 0
+            tot_loss = 0
+            with tqdm(tr_dataloader) as progress:
+                for i, (input_nodes, pos_subgraph, neg_subgraph, blocks) in enumerate(progress, 1):
+                    x = self.model.node_embedding(input_nodes)
+                    neg_subgraph.edata['type'] = pos_subgraph.edata['type']
+
+                    pos_x = self.model.trans_r(pos_subgraph, x)
+                    neg_x = self.model.trans_r(neg_subgraph, x)
+                    tr_loss = self.model.trans_r_loss(pos_x, neg_x)
+                    l2_loss = self.l2_weight * self.model.l2_loss(pos_subgraph, x, trans_r=True, neg_graph=neg_subgraph)
+                    loss = tr_loss + l2_loss
+                    loss.backward()
+
+                    tr_optimizer.step()
+                    tr_optimizer.zero_grad()
+
+                    tot_tr += tr_loss.detach()
+                    tot_l2 += l2_loss.detach()
+                    tot_loss += loss.detach()
+
                     if i != length or val_set is None:
                         progress.set_description(f'Epoch {e}, '
-                                                 f'MSE:{tot_mse / i:.5f}'
+                                                 f'TR:{tot_tr / i:.5f}'
                                                  f',L2:{tot_l2 / i:.3g}'
-                                                 f',Tot:{tot_loss / i:.5f}'
-                                                 )
+                                                 f',Tot:{tot_loss / i:.5f}')
+
                     else:
                         self.set_attention(g, verbose=False)
                         mse, rmse = self._validate(val_set)
@@ -282,6 +290,10 @@ class KGAT(Recommender):
                         if self.model_selection == 'best' and mse < best_score:
                             best_state = deepcopy(self.model.state_dict())
                             best_score = mse
+                            best_epoch = e
+
+            if self.early_stopping is not None and e - best_epoch > self.early_stopping:
+                break
 
         if best_state is not None:
             self.model.load_state_dict(best_state)

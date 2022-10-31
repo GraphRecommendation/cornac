@@ -12,25 +12,21 @@ from cornac.models.kgat import dgl_utils
 
 
 class KGATLayer(nn.Module):
-    def __init__(self, in_dim, out_dim, dropout, mode='bi-interaction', propagation_mode='attention'):
+    def __init__(self, in_dim, out_dim, mess_drop, edge_dropout, mode='bi-interaction'):
         super().__init__()
 
         self.in_dim = in_dim
         self.out_dim = out_dim
         self._mode = mode
-        self.propagation_mode = propagation_mode
 
-        self.message_dropout = nn.Dropout(dropout)
+        self.mess_drop = nn.Dropout(mess_drop)
+        self.edge_dropout = nn.Dropout(edge_dropout)
 
         self.activation = nn.LeakyReLU()
 
         if mode == 'bi-interaction':
             self.W1 = nn.Linear(self.in_dim, self.out_dim)  # W1 in Equation (8)
             self.W2 = nn.Linear(self.in_dim, self.out_dim)  # W2 in Equation (8)
-
-            # initialize
-            nn.init.xavier_normal_(self.W1.weight)
-            nn.init.xavier_normal_(self.W2.weight)
         else:
             raise NotImplementedError
 
@@ -40,55 +36,49 @@ class KGATLayer(nn.Module):
             g.srcdata['emb'] = feat_src
             g.dstdata['emb'] = feat_dst
 
-            if self.propagation_mode == 'attention':
-                g.update_all(fn.u_mul_e('emb', 'a', 'm'), fn.sum('m', 'h_n'))
-            elif self.propagation_mode == 'gates':
-                g.update_all(fn.u_mul_e('emb', 'g', 'm'), fn.sum('m', 'h_n'))
+            g.edata['a'] = self.edge_dropout(g.edata['a'])
+
+            g.update_all(fn.u_mul_e('emb', 'a', 'm'), fn.sum('m', 'h_n'))
 
             if self._mode == 'bi-interaction':
                 out = self.activation(self.W1(g.dstdata['emb'] + g.dstdata['h_n'])) + \
                       self.activation(self.W2(g.dstdata['emb'] * g.dstdata['h_n']))
+            else:
+                raise NotImplementedError(f'{self._mode} not implemented.')
 
-        return self.message_dropout(out)
+            out = self.mess_drop(out)
+
+            return out
 
 
 class Model(nn.Module):
-    def __init__(self, n_nodes, n_relations, entity_dim, relation_dim,
-                 n_layers, layer_dims, dropout=0., use_cuda=False, mode='attention'):
+    def __init__(self, n_nodes, n_relations, node_dim, relation_dim,
+                 n_layers, layer_dims, tr_dropout=0, dropouts=None, edge_dropouts=None):
         super(Model, self).__init__()
-        self.use_cuda = use_cuda
-        self.mode = mode
+
+        if dropouts is None:
+            dropouts = [0 for _ in layer_dims]
+        if edge_dropouts is None:
+            edge_dropouts = [0 for _ in layer_dims]
 
         # Define embedding
-        self.node_embedding = nn.Embedding(n_nodes, entity_dim)
+        self.node_embedding = nn.Embedding(n_nodes, node_dim)
         self.relation_embedding = nn.Embedding(n_relations, relation_dim)
-        self.W_r = nn.Parameter(torch.Tensor(n_relations, entity_dim, relation_dim))
+        self.W_r = nn.Parameter(torch.Tensor(n_relations, node_dim, relation_dim))
+        self.tr_feat_dropout = nn.Dropout(tr_dropout)
 
         self.tanh = nn.Tanh()
 
-        # Must have an output dim for each layer
-        assert n_layers == len(layer_dims)
-
-        if mode == 'gates':
-            # All dimensions must be the same for gates to work.
-            assert all(d == relation_dim for d in layer_dims)
-            assert entity_dim == relation_dim
-            self.gate_head_weight = nn.Parameter(torch.Tensor(relation_dim, relation_dim))
-            self.gate_tail_weight = nn.Parameter(torch.Tensor(relation_dim, relation_dim))
-            self.gate_relation_weight = nn.Parameter(torch.Tensor(relation_dim, relation_dim))
-            self.gate_bias = nn.Parameter(torch.Tensor(relation_dim))
-            self.sigmoid = nn.Sigmoid()
-
         layers = nn.ModuleList()
-        out_dim = entity_dim
+        out_dim = node_dim
         for layer in range(n_layers):
             in_dim = out_dim
             out_dim = layer_dims[layer]
-            layers.append(KGATLayer(in_dim, out_dim, dropout, propagation_mode=self.mode))
+            layers.append(KGATLayer(in_dim, out_dim, dropouts[layer], edge_dropouts[layer]))
 
         self.layers = layers
 
-        self._trans_r_loss_fn = torch.nn.LogSigmoid()
+        self._trans_r_loss_fn = torch.nn.Softplus()  # Softplus faster than logsigmoid
         self._loss_fn = torch.nn.MSELoss()
 
         # sampler = dgl.dataloading.neighbor.MultiLayerFullNeighborSampler(3)
@@ -116,6 +106,7 @@ class Model(nn.Module):
 
     def trans_r(self, g: dgl.DGLGraph, x):
         with g.local_scope():
+            x = self.tr_feat_dropout(x)
             g.ndata['emb'] = x
 
             g.apply_edges(self._trans_r_fn)
@@ -123,7 +114,7 @@ class Model(nn.Module):
             return g.edata['ps']
 
     def trans_r_loss(self, pos_emb, neg_emb):
-        return - self._trans_r_loss_fn(neg_emb - pos_emb).mean()
+        return self._trans_r_loss_fn(-(neg_emb - pos_emb)).mean()
 
     def l2_loss(self, g, embeddings, trans_r=False, neg_graph=None):
         users, items_i = g.edges()
@@ -174,7 +165,8 @@ class Model(nn.Module):
                     attention[batched_g.edata[dgl.EID]] = batched_g.edata['a']
 
             g.edata['a'] = attention.to(g.device)
-            return edge_softmax(g, g.edata['a'])
+            attention = edge_softmax(g, g.edata['a'])
+            return attention
 
     def forward(self, blocks, x):
         output_nodes = blocks[-1].dstdata[dgl.NID]
@@ -184,7 +176,8 @@ class Model(nn.Module):
         embs = [x[:n_out]]
         for block, layer in iterator:
             x = layer(block, x)
-            embs.append(x[:n_out])
+            n_emb = x / x.norm(dim=1, keepdim=True)
+            embs.append(n_emb[:n_out])
 
         return torch.cat(embs, dim=1)
 
