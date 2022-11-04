@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 
 shared_hyperparameters = {
-    'batch_size': 128,
+    'batch_size': 256,
     'num_epochs': 500,
     'early_stopping': 20,
     'model_selection': 'best',
