@@ -30,7 +30,7 @@ BASE_STR = 'source .venv/bin/activate;'
 
 def process_runner(method, parameters, gpu):
     if method == 'hear':
-        script = 'experiment.py'
+        script = 'hear_exp.py'
     else:
         raise NotImplementedError
 

@@ -1,9 +1,8 @@
 import os
-from collections import Counter, defaultdict
+from collections import defaultdict
 from copy import deepcopy
 from math import sqrt
 
-import tensorboard.summary
 import torch
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
