@@ -28,13 +28,9 @@ GPUS = list(range(1))
 BASE_STR = 'source .venv/bin/activate;'
 
 
-def process_runner(method, parameters, gpu):
-    if method == 'hear':
-        script = 'hear_exp.py'
-    else:
-        raise NotImplementedError
-
-    str_arg = ' '.join([BASE_STR, f"CUDA_VISIBLE_DEVICES={gpu} python", script, str(parameters)]).replace("'", "\\'")
+def process_runner(dataset, method, parameters, gpu):
+    str_arg = ' '.join([BASE_STR, f"CUDA_VISIBLE_DEVICES={gpu} python experiment.py {dataset} {method}",
+                        str(parameters)]).replace("'", "\\'")
     p = subprocess.Popen(str_arg, stdout=subprocess.PIPE, shell=True, executable='/bin/bash')
     for line in p.stdout:
         print(line)
@@ -51,7 +47,7 @@ def create_hyperparameter_dict(comb, model_parameters, shared_parameters):
     return params
 
 
-def run(method):
+def run(dataset, method):
     global shared_hyperparameters, hear_hyperparameters, GPUS
 
     if method == 'hear':
@@ -67,7 +63,7 @@ def run(method):
     futures = []
     first = True
     index = 0
-    with ThreadPoolExecutor(max_workers=len(GPUS)) as e, open(f'{method}_parameters.pkl', 'wb') as f:
+    with ThreadPoolExecutor(max_workers=len(GPUS)) as e, open(f'{dataset}_{method}_parameters.pkl', 'wb') as f:
         while combinations:
             # should only be false on first iteration
             if first:
@@ -77,7 +73,7 @@ def run(method):
                     params.update({'index': index})
                     index += 1
                     pickle.dump(params, f)
-                    futures.append(e.submit(process_runner, method, params, gpu))
+                    futures.append(e.submit(process_runner, dataset, method, params, gpu))
                 first = False
             else:
                 # Check if any completed
@@ -90,7 +86,7 @@ def run(method):
                     params = create_hyperparameter_dict(combinations.pop(0), parameters, shared_hyperparameters)
                     params.update({'index': index})
                     index += 1
-                    futures.append(e.submit(process_runner, method, params, gpu))
+                    futures.append(e.submit(process_runner, dataset, method, params, gpu))
                 else:
                     concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED)
 
@@ -98,4 +94,4 @@ def run(method):
 
 
 if __name__ == '__main__':
-    run('hear')
+    run('cellphone', 'hear')
