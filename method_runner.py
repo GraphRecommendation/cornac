@@ -6,10 +6,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
+# Shared and/or fixed parameters
 shared_hyperparameters = {
     'batch_size': 256,
     'num_epochs': 500,
-    'early_stopping': 20,
+    'early_stopping': 10,
+    'num_workers': 4,
     'model_selection': 'best',
     'user_based': True,
     'verbose': False,
@@ -19,9 +21,9 @@ shared_hyperparameters = {
 }
 
 hear_hyperparameters = {
-    'weight_decay': [10**i for i in range(-8, 0)] + [.0],
-    'learning_rate': [0.05, 0.01, 0.005, 0.001],
-    'dropout': np.linspace(0., 0.8, 9).tolist()
+    'weight_decay': [1e-6, 1e-5, 1e-4],
+    'learning_rate': [0.0001, 0.001, 0.01],
+    'dropout': np.linspace(0., 0.6, 7).tolist()
 }
 
 kgat_hyperparameters = {
