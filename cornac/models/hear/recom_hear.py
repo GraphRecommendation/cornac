@@ -16,6 +16,7 @@ class HEAR(Recommender):
                  batch_size=128,
                  num_workers=0,
                  num_epochs=10,
+                 early_stopping=10,
                  learning_rate=0.1,
                  weight_decay=0,
                  node_dim=64,
@@ -49,6 +50,7 @@ class HEAR(Recommender):
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.num_epochs = num_epochs
+        self.early_stopping = early_stopping
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.node_dim = node_dim
@@ -237,6 +239,7 @@ class HEAR(Recommender):
 
         best_state = None
         best_score = float('inf')
+        no_improv = 0
         epoch_length = len(dataloader)
         for e in range(self.num_epochs):
             tot_mse = 0
@@ -280,6 +283,11 @@ class HEAR(Recommender):
                         if self.model_selection == 'best' and mse < best_score:
                             best_state = deepcopy(self.model.state_dict())
                             best_score = mse
+                        else:
+                            no_improv += 1
+
+            if self.early_stopping is not None and no_improv >= self.early_stopping:
+                break
 
         if best_state is not None:
             self.model.load_state_dict(best_state)
