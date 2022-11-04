@@ -1,3 +1,4 @@
+import os
 from collections import Counter, defaultdict
 from copy import deepcopy
 from math import sqrt
@@ -17,25 +18,23 @@ class KGAT(Recommender):
                  learning_rate=0.1,
                  l2_weight=0,
                  node_dim=64,
-                 relation_dim=32,
+                 relation_dim=64,
                  layer_dims=None,
                  model_selection='best',
                  early_stopping=None,
-                 tr_feat_droout=0.5,
-                 layer_dropouts=None,
-                 edge_dropouts=None,
+                 tr_feat_droout=.0,
+                 layer_dropouts=.1,
+                 edge_dropouts=.0,
                  normalize=False,
                  user_based=True,
-                 debug=False
+                 debug=False,
+                 verbose=True,
+                 index=0
                  ):
         super().__init__(name)
         # Default values
         if layer_dims is None:
-            layer_dims = [32, 16, 16]
-        if layer_dropouts is None:
-            layer_dropouts = [0, 0, 0]  # node embedding dropout, review embedding dropout
-        if edge_dropouts is None:
-            edge_dropouts = [0, 0, 0]
+            layer_dims = [64, 32, 16]
 
         # CUDA
         self.use_cuda = use_cuda
@@ -67,12 +66,11 @@ class KGAT(Recommender):
         # Misc
         self.user_based = user_based
         self.debug = debug
+        self.verbose = verbose
+        self.index = index
 
         # assertions
         assert use_uva == use_cuda or not use_uva, 'use_cuda must be true when using uva.'
-        assert len(layer_dims) == self.n_layers
-        assert len(layer_dropouts) == self.n_layers
-        assert len(edge_dropouts) == self.n_layers
 
     def _create_graphs(self, train_set: Dataset):
         import dgl
@@ -148,16 +146,14 @@ class KGAT(Recommender):
 
     def fit(self, train_set: Dataset, val_set=None):
         from .kgat import Model
-        import dgl
-        from torch import optim
-        from . import dgl_utils
 
         super().fit(train_set, val_set)
         n_nodes, n_relations = self._create_graphs(train_set)  # graphs are as attributes of model.
 
         # create model
         self.model = Model(n_nodes, n_relations, self.node_dim, self.relation_dim, self.n_layers,
-                           self.layer_dims, self.tr_feat_droout, self.layer_dropouts, self.edge_dropouts)
+                           self.layer_dims, self.tr_feat_droout, [self.layer_dropouts]*self.n_layers,
+                           [self.edge_dropouts]*self.n_layers)
 
         self.model.reset_parameters()
 
@@ -165,9 +161,14 @@ class KGAT(Recommender):
 
         if self.use_cuda:
             self.model = self.model.cuda()
-            prefetch = ['label']
-        else:
-            prefetch = []
+
+        if self.trainable:
+            self._fit(val_set)
+
+    def _fit(self, val_set):
+        import dgl
+        from torch import optim
+        from . import dgl_utils
 
         # Edges where label is non-zero and user and item occurs more than once.
         g = self.train_graph
@@ -230,7 +231,7 @@ class KGAT(Recommender):
             tot_loss = 0
 
             # CF
-            with tqdm(cf_dataloader) as progress:
+            with tqdm(cf_dataloader, disable=not self.verbose) as progress:
                 for i, (input_nodes, edge_subgraph, blocks) in enumerate(progress, 1):
                     emb = self.model.node_embedding(input_nodes)
                     x = self.model(blocks, emb)
@@ -258,7 +259,7 @@ class KGAT(Recommender):
             # TransR
             tot_l2 = 0
             tot_loss = 0
-            with tqdm(tr_dataloader) as progress:
+            with tqdm(tr_dataloader, disable=not self.verbose) as progress:
                 for i, (input_nodes, pos_subgraph, neg_subgraph, blocks) in enumerate(progress, 1):
                     x = self.model.node_embedding(input_nodes)
                     neg_subgraph.edata['type'] = pos_subgraph.edata['type']
@@ -299,7 +300,7 @@ class KGAT(Recommender):
 
         if best_state is not None:
             self.model.load_state_dict(best_state)
-            self.set_attention(g)
+            self.set_attention(g, verbose=self.verbose)
 
         _ = self._validate(val_set)
 
@@ -326,3 +327,13 @@ class KGAT(Recommender):
 
     def monitor_value(self):
         pass
+
+    def save(self, save_dir=None):
+        if save_dir is None:
+            return
+
+        path = super().save(save_dir)
+        name = path.rsplit('/', 1)[-1].replace('pkl', 'pt')
+
+        state = self.model.state_dict()
+        torch.save(state, os.path.join(save_dir, str(self.index), name))

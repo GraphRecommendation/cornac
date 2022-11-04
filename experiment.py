@@ -31,7 +31,7 @@ def run(in_kwargs, dataset, method, save_dir='.'):
         default_kwargs = {
             'use_cuda': True,
             'use_uva': False,
-            'batch_size': 128,
+            'batch_size': 256,
             'num_workers': 5,
             'num_epochs': 10,
             'learning_rate': 0.001,
@@ -56,6 +56,25 @@ def run(in_kwargs, dataset, method, save_dir='.'):
         if 'dropout' in in_kwargs:
             in_kwargs['layer_dropout'] = in_kwargs['dropout']
             in_kwargs['attention_dropout'] = in_kwargs['dropout']
+    elif method == 'kgat':
+        default_kwargs = {
+            'use_cuda': True,
+            'use_uva': False,
+            'batch_size': 256,
+            'num_workers': 5,
+            'num_epochs': 10,
+            'learning_rate': 0.001,
+            'weight_decay': 1e-4,
+            'node_dim': 64,
+            'relation_dim': 32,
+            'model_selection': 'best',
+            'layer_dropout': .5,
+            'edge_dropouts': .1,
+            'user_based': user_based,
+            'debug': False,
+            'out_path': save_dir,
+            'verbose': True
+        }
     else:
         raise NotImplementedError
 

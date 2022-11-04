@@ -24,7 +24,19 @@ hear_hyperparameters = {
     'dropout': np.linspace(0., 0.8, 9).tolist()
 }
 
+kgat_hyperparameters = {
+    'l2_weight': [1e-6, 1e-5, 1e-4],
+    'learning_rate': [0.0001, 0.001],
+    'dropout': [0., 0.1, 0.2]
+}
+
+# narre_hyperparameters = {
+#     'learning_rate',
+#     'dropout',
+# }
+
 GPUS = list(range(1))
+GPUS = [g for _ in range(1) for g in GPUS]  # Multiplier for multiple processes per GPU.
 BASE_STR = 'source .venv/bin/activate;'
 
 
