@@ -1,5 +1,6 @@
 import concurrent
 import itertools
+import pickle
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 
@@ -11,9 +12,10 @@ shared_hyperparameters = {
     'early_stopping': 20,
     'model_selection': 'best',
     'user_based': True,
+    'verbose': False,
     # HEAR specific but does not affect other models
     'review_aggregator': 'narre',
-    'predictor': 'narre'
+    'predictor': 'narre',
 }
 
 hear_hyperparameters = {
@@ -32,7 +34,7 @@ def process_runner(method, parameters, gpu):
     else:
         raise NotImplementedError
 
-    str_arg = ' '.join([BASE_STR, f"CUDA_VISIBLE_DEVICES={gpu} python", script, str(parameters)])
+    str_arg = ' '.join([BASE_STR, f"CUDA_VISIBLE_DEVICES={gpu} python", script, str(parameters)]).replace("'", "\\'")
     p = subprocess.Popen(str_arg, stdout=subprocess.PIPE, shell=True, executable='/bin/bash')
     for line in p.stdout:
         print(line)
@@ -64,15 +66,18 @@ def run(method):
 
     futures = []
     first = True
-    with ThreadPoolExecutor(max_workers=len(GPUS)) as e:
+    index = 0
+    with ThreadPoolExecutor(max_workers=len(GPUS)) as e, open(f'{method}_parameters.pkl', 'wb') as f:
         while combinations:
             # should only be false on first iteration
             if first:
                 # start process on each gpu. Zip ensures we do not iterate more than num gpus or combinations.
                 for _, gpu in list(zip(combinations, GPUS)):
                     params = create_hyperparameter_dict(combinations.pop(0), parameters, shared_hyperparameters)
+                    params.update({'index': index})
+                    index += 1
+                    pickle.dump(params, f)
                     futures.append(e.submit(process_runner, method, params, gpu))
-
                 first = False
             else:
                 # Check if any completed
@@ -83,6 +88,8 @@ def run(method):
                     f = futures.pop(completed[0])
                     gpu = f.result()
                     params = create_hyperparameter_dict(combinations.pop(0), parameters, shared_hyperparameters)
+                    params.update({'index': index})
+                    index += 1
                     futures.append(e.submit(process_runner, method, params, gpu))
                 else:
                     concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED)

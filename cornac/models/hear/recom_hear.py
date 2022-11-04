@@ -1,8 +1,11 @@
+import os
 from collections import Counter, defaultdict
 from copy import deepcopy
 from math import sqrt
 
+import tensorboard.summary
 import torch
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from ..recommender import Recommender
@@ -27,12 +30,16 @@ class HEAR(Recommender):
                  layer_dropout=None,
                  attention_dropout=.2,
                  user_based=True,
+                 verbose=True,
+                 index=0,
+                 use_tensorboard=True,
+                 out_path=None,
                  debug=False
                  ):
         super().__init__(name)
         # Default values
         if layer_dropout is None:
-            layer_dropout = [0, 0]  # node embedding dropout, review embedding dropout
+            layer_dropout = 0.  # node embedding dropout, review embedding dropout
 
         # CUDA
         self.use_cuda = use_cuda
@@ -55,6 +62,10 @@ class HEAR(Recommender):
         self.predictor = predictor
         self.layer_dropout = layer_dropout
         self.attention_dropout = attention_dropout
+        parameter_list = ['batch_size', 'learning_rate', 'weight_decay', 'node_dim', 'review_dim',
+                          'final_dim', 'num_heads', 'fanout', 'model_selection', 'review_aggregator',
+                          'predictor', 'layer_dropout', 'attention_dropout']
+        self.parameters = {k: self.__getattribute__(k) for k in parameter_list}
 
         # Method
         self.node_review_graph = None
@@ -65,12 +76,17 @@ class HEAR(Recommender):
 
         # Misc
         self.user_based = user_based
+        self.verbose = verbose
         self.debug = debug
+        self.index = index
+        if use_tensorboard:
+            assert out_path is not None, f'Must give a path if using tensorboard.'
+            assert os.path.exists(out_path), f'{out_path} is not a valid path.'
+            p = os.path.join(out_path, str(index))
+            self.summary_writer = SummaryWriter(log_dir=p)
 
         # assertions
         assert use_uva == use_cuda or not use_uva, 'use_cuda must be true when using uva.'
-        assert len(layer_dropout) == 2, f'Length of dropout list must be 2 was {len(layer_dropout)}. ' \
-                                        f'First for node embedding dropout, second for review embedding dropout.'
 
     def _create_graphs(self, train_set: Dataset):
         import dgl
@@ -90,7 +106,7 @@ class HEAR(Recommender):
                                 for iid, rid in irid.items()}
         review_edges = []
         for uid, isid in tqdm(sentiment_modality.user_sentiment.items(), desc='Creating review graphs',
-                              total=len(sentiment_modality.user_sentiment)):
+                              total=len(sentiment_modality.user_sentiment), disable=not self.verbose):
             uid += n_items
 
             for iid, sid in isid.items():
@@ -154,26 +170,38 @@ class HEAR(Recommender):
 
     def fit(self, train_set: Dataset, val_set=None):
         from .hear import Model
-        import dgl
-        from torch import optim
-        from . import dgl_utils
 
         super().fit(train_set, val_set)
         n_nodes = self._create_graphs(train_set)  # graphs are as attributes of model.
 
         # create model
         self.model = Model(n_nodes, self.review_aggregator, self.predictor, self.node_dim,
-                           self.review_dim, self.final_dim, self.num_heads, self.layer_dropout, self.attention_dropout)
+                           self.review_dim, self.final_dim, self.num_heads, [self.layer_dropout]*2,
+                           self.attention_dropout)
 
         self.model.reset_parameters()
 
-        print(sum(p.numel() for p in self.model.parameters()))
+        if self.verbose:
+            print(f'Number of trainable parameters: {sum(p.numel() for p in self.model.parameters())}')
 
         if self.use_cuda:
             self.model = self.model.cuda()
             prefetch = ['label']
         else:
             prefetch = []
+
+        if self.trainable:
+            self._fit(prefetch, val_set)
+
+        if self.summary_writer is not None:
+            self.summary_writer.close()
+
+        return self
+
+    def _fit(self, prefetch, val_set=None):
+        import dgl
+        from torch import optim
+        from . import dgl_utils
 
         # Get graph and edges
         g = self.train_graph
@@ -210,11 +238,12 @@ class HEAR(Recommender):
 
         best_state = None
         best_score = float('inf')
+        epoch_length = len(dataloader)
         for e in range(self.num_epochs):
             tot_mse = 0
             # tot_l2 = 0
             # tot_loss = 0
-            with tqdm(dataloader) as progress:
+            with tqdm(dataloader, disable=not self.verbose) as progress:
                 for i, (input_nodes, edge_subgraph, blocks) in enumerate(progress, 1):
                     x = self.model(blocks, self.model.node_embedding(input_nodes))
 
@@ -229,6 +258,9 @@ class HEAR(Recommender):
                     # tot_l2 += l2_loss.detach()
                     # tot_loss += loss.detach()
 
+                    if self.summary_writer is not None:
+                        self.summary_writer.add_scalar('train/mse', mse_loss, e*epoch_length+i)
+
                     optimizer.step()
                     optimizer.zero_grad()
                     if i != length or val_set is None:
@@ -242,6 +274,10 @@ class HEAR(Recommender):
                         progress.set_description(f'Epoch {e}, MSE: {tot_mse / i:.5f}, Val: MSE: {mse:.5f}, '
                                                  f'RMSE: {rmse:.5f}')
 
+                        if self.summary_writer is not None:
+                            self.summary_writer.add_scalar('val/mse', mse, e)
+                            self.summary_writer.add_scalar('val/rmse', rmse, e)
+
                         if self.model_selection == 'best' and mse < best_score:
                             best_state = deepcopy(self.model.state_dict())
                             best_score = mse
@@ -249,7 +285,13 @@ class HEAR(Recommender):
         if best_state is not None:
             self.model.load_state_dict(best_state)
 
-        _ = self._validate(val_set)
+        if val_set is not None and self.summary_writer is not None:
+            mse, rmse = self._validate(val_set)
+            self.summary_writer.add_hparams(self.parameters, {'mse': mse, 'rmse': rmse})
+
+        self.model.eval()
+        with torch.no_grad():
+            self.model.inference(self.review_graphs, self.node_review_graph, self.device)
 
     def _validate(self, val_set):
         from ...eval_methods.base_method import rating_eval
@@ -273,3 +315,13 @@ class HEAR(Recommender):
 
     def monitor_value(self):
         pass
+
+    def save(self, save_dir=None):
+        if save_dir is None:
+            return
+
+        path = super().save(save_dir)
+        name = path.rsplit('/', 1)[-1].replace('pkl', 'pt')
+
+        state = self.model.state_dict()
+        torch.save(state, os.path.join(save_dir, str(self.index), name))

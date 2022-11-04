@@ -24,8 +24,41 @@ from cornac.data.text import BaseTokenizer
 import sys
 
 
-def run(kwargs):
+def run(kwargs, save_dir='.'):
     user_based = kwargs.pop('user_based', True)
+
+    default_kwargs = {
+        'use_cuda': True,
+        'use_uva': False,
+        'batch_size': 64,
+        'num_workers': 5,
+        'num_epochs': 10,
+        'learning_rate': 0.001,
+        'weight_decay': 1e-4,
+        'node_dim': 64,
+        'review_dim': 32,
+        'final_dim': 16,
+        'num_heads': 3,
+        'fanout': 5,
+        'model_selection': 'best',
+        'review_aggregator': 'narre',
+        'predictor': 'narre',
+        'layer_dropout': .5,
+        'attention_dropout': .1,
+        'user_based': user_based,
+        'debug': False,
+        'out_path': save_dir,
+        'verbose': True
+    }
+    parameters = list(inspect.signature(cornac.models.HEAR).parameters.keys())
+    # Same dropout
+    if 'dropout' in kwargs:
+        kwargs['layer_dropout'] = kwargs['dropout']
+        kwargs['attention_dropout'] = kwargs['dropout']
+
+    kwargs = {k: v for k, v in kwargs.items() if k in parameters}  # some python args are not relevant for model
+    default_kwargs.update(kwargs)
+
     feedback = amazon_cellphone_seer.load_feedback(fmt="UIRT", reader=Reader())
     reviews = amazon_cellphone_seer.load_review()
     sentiment = amazon_cellphone_seer.load_sentiment(reader=Reader())
@@ -48,54 +81,19 @@ def run(kwargs):
         test_size=0.2,
         val_size=0.16,
         exclude_unknowns=True,
-        verbose=True,
+        verbose=default_kwargs.get('verbose', True),
     )
-
-    default_kwargs = {
-        'use_cuda': True,
-        'use_uva': False,
-        'batch_size': 64,
-        'num_workers': 5,
-        'num_epochs': 10,
-        'learning_rate': 0.001,
-        'weight_decay': 1e-4,
-        'node_dim': 64,
-        'review_dim': 32,
-        'final_dim': 16,
-        'num_heads': 3,
-        'fanout': 5,
-        'model_selection': 'best',
-        'review_aggregator': 'narre',
-        'predictor': 'narre',
-        'layer_dropout': [.5, .5],
-        'attention_dropout': .1,
-        'user_based': user_based,
-        'debug': False
-    }
-
-    parameters = list(inspect.signature(cornac.models.HEAR).parameters.keys())
-
-    # Same dropout
-    if 'dropout' in kwargs:
-        kwargs['layer_dropout'] = kwargs['dropout']
-        kwargs['attention_dropout'] = kwargs['dropout']
-
-    kwargs = {k: v for k, v in kwargs.items() if k in parameters}  # some python args are not relevant for model
-    default_kwargs.update(kwargs)
-
-    # Assume both layers to have equal dropout rate.
-    if isinstance(default_kwargs['layer_dropout'], float):
-        default_kwargs.update({'layer_dropout': [default_kwargs['layer_dropout']]*2})
 
     model = cornac.models.HEAR(**default_kwargs)
 
     cornac.Experiment(
         eval_method=eval_method, models=[model], metrics=[cornac.metrics.MSE(), cornac.metrics.RMSE()],
-        user_based=user_based
+        user_based=user_based, save_dir=save_dir, verbose=default_kwargs.get('verbose', True)
     ).run()
 
 
 if __name__ == '__main__':
-    kwargs = '{' + ','.join(sys.argv[1:]) + '}'
+    kwargs = ' '.join(sys.argv[1:])
+    print(kwargs)
     kwargs = eval(kwargs)
-    run(kwargs)
+    run(kwargs, 'results/hear')
