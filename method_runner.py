@@ -11,7 +11,7 @@ import numpy as np
 shared_hyperparameters = {
     'batch_size': 256,
     'num_epochs': 500,
-    'early_stopping': 10,
+    'early_stopping': 25,
     'num_workers': 4,
     'model_selection': 'best',
     'user_based': True,
