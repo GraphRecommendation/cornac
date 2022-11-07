@@ -35,6 +35,7 @@ class HEARConv(nn.Module):
     def __init__(self,
                  aggregator,
                  n_nodes,
+                 n_relations,
                  in_feats,
                  attention_feats,
                  num_heads,
@@ -52,9 +53,18 @@ class HEARConv(nn.Module):
         self._allow_zero_in_degree = allow_zero_in_degree
         self.fc_src = nn.Linear(
             self._in_src_feats, attention_feats * num_heads, bias=bias)
-        if self.aggregator == 'narre':
+        if self.aggregator.startswith('narre'):
             self.node_quality = nn.Embedding(n_nodes, self._in_dst_feats)
-            self.fc_qual = nn.Linear(self._in_dst_feats, attention_feats * num_heads, bias=bias)
+            if self.aggregator == 'narre':
+                self.fc_qual = nn.Linear(self._in_dst_feats, attention_feats * num_heads, bias=bias)
+            elif self.aggregator == 'narre-rel':
+                raise NotImplementedError(f'{self.aggregator} is not yet implemented.')
+            else:
+                raise NotImplementedError(f'Not implemented any aggregator named {self.aggregator}.')
+        elif self.aggregator == 'gatv2':
+            pass
+        else:
+            raise NotImplementedError(f'Not implemented any aggregator named {self.aggregator}.')
         self.attn = nn.Parameter(torch.FloatTensor(size=(1, num_heads, attention_feats)))
         self.feat_drop = nn.Dropout(feat_drop)
         self.attn_drop = nn.Dropout(attn_drop)
@@ -146,7 +156,7 @@ class HEARConv(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, n_nodes, aggregator, predictor, node_dim, review_dim, final_dim, num_heads, layer_dropout,
+    def __init__(self, n_nodes, n_relations, aggregator, predictor, node_dim, review_dim, final_dim, num_heads, layer_dropout,
                  attention_dropout):
         super().__init__()
 
@@ -158,7 +168,7 @@ class Model(nn.Module):
         self.num_heads = num_heads
         self.node_embedding = nn.Embedding(n_nodes, node_dim)
         self.review_conv = HypergraphLayer(node_dim, review_dim)
-        self.review_agg = HEARConv(aggregator, n_nodes, review_dim, final_dim, num_heads,
+        self.review_agg = HEARConv(aggregator, n_nodes, n_relations, review_dim, final_dim, num_heads,
                                    feat_drop=layer_dropout[1], attn_drop=attention_dropout)
 
         self.node_dropout = nn.Dropout(layer_dropout[0])

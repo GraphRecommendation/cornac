@@ -105,12 +105,14 @@ class HEAR(Recommender):
         user_item_review_map = {(uid + n_items, iid): rid for uid, irid in sentiment_modality.user_sentiment.items()
                                 for iid, rid in irid.items()}
         review_edges = []
+        ratings = []
         for uid, isid in tqdm(sentiment_modality.user_sentiment.items(), desc='Creating review graphs',
                               total=len(sentiment_modality.user_sentiment), disable=not self.verbose):
             uid += n_items
 
             for iid, sid in isid.items():
                 review_edges.extend([[sid, uid], [sid, iid]])
+                ratings.extend([train_set.matrix[uid-n_items, iid]]*2)
                 edges = []
                 a_o_count = defaultdict(int)
                 aos = sentiment_modality.sentiment[sid]
@@ -160,11 +162,23 @@ class HEAR(Recommender):
         edges = torch.LongTensor(review_edges).T
         self.node_review_graph = dgl.heterograph({('review', 'part_of', 'node'): (edges[0], edges[1])})
 
-        # Assign edges node_ids s.t. an edge from user to review has the item nid its about.
+        # Assign edges node_ids s.t. an edge from user to review has the item nid its about and reversely.
         self.node_review_graph.edata['nid'] = torch.LongTensor(self.node_review_graph.num_edges())
         _, v, eids = self.node_review_graph.edges(form='all')
         self.node_review_graph.edata['nid'][eids % 2 == 0] = v[eids % 2 == 1]
         self.node_review_graph.edata['nid'][eids % 2 == 1] = v[eids % 2 == 0]
+
+        # Scale ratings with denominator if not integers. I.e., if .25 multiply by 4.
+        # A mapping from frac to int. If
+        denominators = [e.as_integer_ratio()[1] for e in ratings]
+        i = 0
+        while any(d != 1 for d in denominators):
+            ratings = ratings * max(denominators)
+            denominators = [e.as_integer_ratio()[1] for e in ratings]
+            i += 1
+            assert i < 100, 'Tried to convert ratings to integers but took to long.'
+
+        self.node_review_graph.edata['r_type'] = torch.LongTensor(ratings)-1
 
         return n_nodes
 
@@ -173,9 +187,10 @@ class HEAR(Recommender):
 
         super().fit(train_set, val_set)
         n_nodes = self._create_graphs(train_set)  # graphs are as attributes of model.
+        n_r_types = max(self.node_review_graph.edata['r_type'])
 
         # create model
-        self.model = Model(n_nodes, self.review_aggregator, self.predictor, self.node_dim,
+        self.model = Model(n_nodes, n_r_types, self.review_aggregator, self.predictor, self.node_dim,
                            self.review_dim, self.final_dim, self.num_heads, [self.layer_dropout]*2,
                            self.attention_dropout)
 
