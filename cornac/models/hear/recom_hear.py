@@ -2,9 +2,6 @@ import os
 from collections import defaultdict
 from copy import deepcopy
 from math import sqrt
-
-import torch
-from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from ..recommender import Recommender
@@ -36,6 +33,8 @@ class HEAR(Recommender):
                  out_path=None,
                  debug=False
                  ):
+        from torch.utils.tensorboard import SummaryWriter
+
         super().__init__(name)
         # Default values
         if layer_dropout is None:
@@ -201,6 +200,7 @@ class HEAR(Recommender):
 
     def _fit(self, prefetch, val_set=None):
         import dgl
+        import torch
         from torch import optim
         from . import dgl_utils
 
@@ -324,6 +324,8 @@ class HEAR(Recommender):
         pass
 
     def save(self, save_dir=None):
+        import torch
+
         if save_dir is None:
             return
 

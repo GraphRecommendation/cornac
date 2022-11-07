@@ -73,6 +73,8 @@ def run(dataset, method):
 
     if method == 'hear':
         parameters = hear_hyperparameters
+    elif method == 'kgat':
+        parameters = kgat_hyperparameters
     else:
         raise NotImplementedError
 
@@ -115,4 +117,4 @@ def run(dataset, method):
 
 
 if __name__ == '__main__':
-    run('cellphone', 'hear')
+    run(config['DATASET'], config['METHOD'])

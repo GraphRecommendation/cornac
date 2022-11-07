@@ -2,8 +2,6 @@ import os
 from collections import Counter, defaultdict
 from copy import deepcopy
 from math import sqrt
-
-import torch
 from tqdm import tqdm
 
 from ..recommender import Recommender
@@ -22,15 +20,20 @@ class KGAT(Recommender):
                  layer_dims=None,
                  model_selection='best',
                  early_stopping=None,
-                 tr_feat_droout=.0,
+                 tr_feat_dropout=.0,
                  layer_dropouts=.1,
                  edge_dropouts=.0,
                  normalize=False,
                  user_based=True,
                  debug=False,
                  verbose=True,
-                 index=0
+                 index=0,
+                 use_tensorboard=True,
+                 out_path=None,
                  ):
+
+        from torch.utils.tensorboard import SummaryWriter
+
         super().__init__(name)
         # Default values
         if layer_dims is None:
@@ -53,10 +56,20 @@ class KGAT(Recommender):
         self.n_layers = len(layer_dims)
         self.model_selection = model_selection
         self.early_stopping = early_stopping
-        self.tr_feat_droout = tr_feat_droout
+        self.tr_feat_dropout = tr_feat_dropout
         self.layer_dropouts = layer_dropouts
         self.edge_dropouts = edge_dropouts
         self.normalize = normalize
+        parameter_list = ['batch_size', 'learning_rate', 'l2_weight', 'node_dim', 'relation_dim', 'layer_dims',
+                          'tr_feat_dropout', 'layer_dropouts', 'model_selection', 'edge_dropouts', 'normalize']
+        self.parameters = {}
+        for k in parameter_list:
+            attr = self.__getattribute__(k)
+            if isinstance(attr, list):
+                for i in range(len(attr)):
+                    self.parameters[f'{k}_{i}'] = attr[i]
+            else:
+                self.parameters[k] = attr
 
         # Method
         self.train_graph = None
@@ -68,6 +81,11 @@ class KGAT(Recommender):
         self.debug = debug
         self.verbose = verbose
         self.index = index
+        if use_tensorboard:
+            assert out_path is not None, f'Must give a path if using tensorboard.'
+            assert os.path.exists(out_path), f'{out_path} is not a valid path.'
+            p = os.path.join(out_path, str(index))
+            self.summary_writer = SummaryWriter(log_dir=p)
 
         # assertions
         assert use_uva == use_cuda or not use_uva, 'use_cuda must be true when using uva.'
@@ -141,6 +159,8 @@ class KGAT(Recommender):
         return n_nodes, n_relations
 
     def set_attention(self, g, verbose=True):
+        import torch
+
         with torch.no_grad():
             g.edata['a'] = self.model.compute_attention(g, self.batch_size, verbose=verbose).pin_memory()
 
@@ -152,12 +172,13 @@ class KGAT(Recommender):
 
         # create model
         self.model = Model(n_nodes, n_relations, self.node_dim, self.relation_dim, self.n_layers,
-                           self.layer_dims, self.tr_feat_droout, [self.layer_dropouts]*self.n_layers,
-                           [self.edge_dropouts]*self.n_layers)
+                           self.layer_dims, self.tr_feat_dropout, [self.layer_dropouts] * self.n_layers,
+                           [self.edge_dropouts] * self.n_layers)
 
         self.model.reset_parameters()
 
-        print(sum(p.numel() for p in self.model.parameters()))
+        if self.verbose:
+            print(f'Number of trainable parameters: {sum(p.numel() for p in self.model.parameters())}')
 
         if self.use_cuda:
             self.model = self.model.cuda()
@@ -167,6 +188,7 @@ class KGAT(Recommender):
 
     def _fit(self, val_set):
         import dgl
+        import torch
         from torch import optim
         from . import dgl_utils
 
@@ -208,6 +230,7 @@ class KGAT(Recommender):
         tr_dataloader = dgl.dataloading.DataLoader(g, tr_edges, sampler, batch_size=self.batch_size*3, shuffle=True,
                                                       drop_last=True, device=self.device, use_uva=self.use_uva,
                                                       num_workers=num_workers, use_prefetch_thread=thread)
+        transr_length = len(tr_dataloader)
 
         # CF sampler
         sampler = dgl.dataloading.MultiLayerFullNeighborSampler(self.n_layers)
@@ -215,17 +238,16 @@ class KGAT(Recommender):
         cf_dataloader = dgl.dataloading.DataLoader(g, cf_eids, sampler, batch_size=self.batch_size, shuffle=True,
                                                 drop_last=True, device=self.device, use_uva=self.use_uva,
                                                 num_workers=num_workers, use_prefetch_thread=thread)
+        cf_length = len(cf_dataloader)
 
         # Initialize training params.
         tr_optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
         cf_optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
-        length = len(tr_dataloader)
 
         best_state = None
         best_score = float('inf')
         best_epoch = -1
         for e in range(self.num_epochs):
-            tot_tr = 0
             tot_mse = 0
             tot_l2 = 0
             tot_loss = 0
@@ -256,7 +278,12 @@ class KGAT(Recommender):
                                              f',Tot:{tot_loss / i:.5f}'
                                              )
 
+                    if self.summary_writer is not None:
+                        self.summary_writer.add_scalar('train/cf/mse', mse_loss, e*cf_length+i)
+                        self.summary_writer.add_scalar('train/cf/l2', l2_loss, e*cf_length+i)
+
             # TransR
+            tot_tr = 0
             tot_l2 = 0
             tot_loss = 0
             with tqdm(tr_dataloader, disable=not self.verbose) as progress:
@@ -278,29 +305,42 @@ class KGAT(Recommender):
                     tot_l2 += l2_loss.detach()
                     tot_loss += loss.detach()
 
-                    if i != length or val_set is None:
+                    if self.summary_writer is not None:
+                        self.summary_writer.add_scalar('train/transr/mse', mse_loss, e*transr_length+i)
+                        self.summary_writer.add_scalar('train/cf/l2', l2_loss, e*transr_length+i)
+
+                    if i != transr_length:
                         progress.set_description(f'Epoch {e}, '
                                                  f'TR:{tot_tr / i:.5f}'
                                                  f',L2:{tot_l2 / i:.3g}'
                                                  f',Tot:{tot_loss / i:.5f}')
 
                     else:
-                        self.set_attention(g, verbose=False)
-                        mse, rmse = self._validate(val_set)
-                        progress.set_description(f'Epoch {e}, MSE: {tot_mse / i:.5f}, Val: MSE: {mse:.5f}, '
-                                                 f'RMSE: {rmse:.5f}')
+                        self.set_attention(g, verbose=False)  # Always set attention after final batch.
+                        if val_set is not None:
+                            mse, rmse = self._validate(val_set)
+                            progress.set_description(f'Epoch {e}, MSE: {tot_mse / i:.5f}, Val: MSE: {mse:.5f}, '
+                                                     f'RMSE: {rmse:.5f}')
 
-                        if self.model_selection == 'best' and mse < best_score:
-                            best_state = deepcopy(self.model.state_dict())
-                            best_score = mse
-                            best_epoch = e
+                            if self.summary_writer is not None:
+                                self.summary_writer.add_scalar('val/mse', mse, e)
+                                self.summary_writer.add_scalar('val/rmse', rmse, e)
 
-            if self.early_stopping is not None and e - best_epoch > self.early_stopping:
+                            if self.model_selection == 'best' and mse < best_score:
+                                best_state = deepcopy(self.model.state_dict())
+                                best_score = mse
+                                best_epoch = e
+
+            if self.early_stopping is not None and e - best_epoch >= self.early_stopping:
                 break
 
         if best_state is not None:
             self.model.load_state_dict(best_state)
             self.set_attention(g, verbose=self.verbose)
+
+        if val_set is not None and self.summary_writer is not None:
+            mse, rmse = self._validate(val_set)
+            self.summary_writer.add_hparams(self.parameters, {'mse': mse, 'rmse': rmse})
 
         _ = self._validate(val_set)
 
@@ -329,6 +369,8 @@ class KGAT(Recommender):
         pass
 
     def save(self, save_dir=None):
+        import torch
+
         if save_dir is None:
             return
 

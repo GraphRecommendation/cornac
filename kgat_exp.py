@@ -59,7 +59,7 @@ def run():
                                layer_dims=[32, 16, 16],
                                model_selection='best',
                                early_stopping=50,
-                               tr_feat_droout=0.,
+                               tr_feat_dropout=0.,
                                layer_dropouts=[.2, .2, .2],
                                edge_dropouts=[.1, .1, .1],
                                user_based=user_based,

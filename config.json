@@ -1,5 +1,8 @@
 {
+  "__GPUS_COMMENT__": "GPUS indicate which GPUs to utilize, if int assume 0 to n-1 gpus are available. Pass list of indices otherwise.",
   "GPUS": 1,
   "GPU_MULT": 1,
-  "BASE": "source .venv/bin/activate;"
+  "BASE": "source .venv/bin/activate;",
+  "DATASET": "cellphone",
+  "METHOD": "kgat"
 }

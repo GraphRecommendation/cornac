@@ -63,18 +63,23 @@ def run(in_kwargs, dataset, method, save_dir='.'):
             'batch_size': 256,
             'num_workers': 5,
             'num_epochs': 10,
-            'learning_rate': 0.001,
-            'weight_decay': 1e-4,
+            'learning_rate': 0.0001,
+            'l2_weight': 1e-5,
             'node_dim': 64,
-            'relation_dim': 32,
+            'relation_dim': 64,
+            'layer_dims': [64, 32, 16],
             'model_selection': 'best',
-            'layer_dropout': .5,
+            'layer_dropouts': .5,
             'edge_dropouts': .1,
             'user_based': user_based,
             'debug': False,
             'out_path': save_dir,
             'verbose': True
         }
+        parameters = list(inspect.signature(cornac.models.KGAT).parameters.keys())
+        if 'dropout' in in_kwargs:
+            in_kwargs['layer_dropouts'] = in_kwargs['dropout']
+            in_kwargs['edge_dropouts'] = in_kwargs['dropout']
     else:
         raise NotImplementedError
 
@@ -115,6 +120,8 @@ def run(in_kwargs, dataset, method, save_dir='.'):
 
     if method == 'hear':
         model = cornac.models.HEAR(**default_kwargs)
+    elif method == 'kgat':
+        model = cornac.models.KGAT(**default_kwargs)
     else:
         raise NotImplementedError
 
