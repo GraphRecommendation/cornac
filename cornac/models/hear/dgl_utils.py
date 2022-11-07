@@ -80,52 +80,6 @@ class HearBlockSampler(dgl.dataloading.NeighborSampler):
         input_nodes, output_nodes, blocks = super().sample(self.node_review_graph, {'node': seed_nodes}, exclude_eids)
         block = blocks[0]
 
-        # narre_flag = pair_graph is not None and self.aggregator == 'narre'
-
-        # If narre, build a batch of graphs, with each graph being a user-item pair.
-        # if narre_flag:
-        #     # Get original user and item node ids.
-        #     u, v = pair_graph.edges()
-        #     org = pair_graph.ndata[dgl.NID]
-        #     u, v = org[u], org[v]
-        #
-        #     # Construct graphs
-        #     graphs = []
-        #     for org_user, org_item in zip(u,v):
-        #         srcs, dsts = [], []
-        #         info = []
-        #
-        #         # Get equivalent node-id in block.
-        #         nids = block.dstnodes('node')
-        #         user = nids[block.dstnodes['node'].data[dgl.NID] == org_user][0]
-        #         item = nids[block.dstnodes['node'].data[dgl.NID] == org_item][0]
-        #
-        #         # Get in edges for user and item and add to current graph.
-        #         for nid, related in [[user, item], [item, user]]:
-        #             src, dst = block.in_edges(nid)
-        #             srcs.append(src)
-        #             dsts.append(dst)
-        #             info.append(torch.full((len(src),), related))
-        #
-        #         srcs, dsts = torch.cat(srcs), torch.cat(dsts)
-        #
-        #         # Assign unique node-id to each review.
-        #         g = dgl.heterograph(
-        #             {('review', 'part_of', 'node'): (torch.arange(len(srcs)), dsts)},
-        #             num_nodes_dict={ntype: block.num_nodes(ntype=ntype) for ntype in block.ntypes}
-        #         )
-        #
-        #         # Reduce graph complexity.
-        #         g = dgl.compact_graphs(g)
-        #
-        #         # Assign different attributes.
-        #         info = torch.cat(info)
-        #         g.srcnodes['review'].data[dgl.NID] = srcs
-        #         g.srcnodes['review'].data['nid'] = info
-        #         g.dstnodes['node'].data[dgl.NID] = torch.LongTensor([org_user, org_item])
-        #
-        #         graphs.append(g)
-
         block = block['part_of']
         blocks[0] = block
 
@@ -146,10 +100,6 @@ class HearBlockSampler(dgl.dataloading.NeighborSampler):
 
         blocks.insert(0, batch)
         input_nodes = nid
-
-        # if narre_flag:
-        #     bg = dgl.batch(graphs)
-        #     blocks[1] = bg
 
         return input_nodes, output_nodes, blocks
 

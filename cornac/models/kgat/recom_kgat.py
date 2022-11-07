@@ -256,7 +256,7 @@ class KGAT(Recommender):
             tot_mse = 0
             tot_l2 = 0
             tot_loss = 0
-
+            self.model.train()
             # CF
             with tqdm(cf_dataloader, disable=not self.verbose) as progress:
                 for i, (input_nodes, edge_subgraph, blocks) in enumerate(progress, 1):

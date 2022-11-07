@@ -187,7 +187,7 @@ class HEAR(Recommender):
 
         super().fit(train_set, val_set)
         n_nodes = self._create_graphs(train_set)  # graphs are as attributes of model.
-        n_r_types = max(self.node_review_graph.edata['r_type'])
+        n_r_types = max(self.node_review_graph.edata['r_type']) + 1
 
         # create model
         self.model = Model(n_nodes, n_r_types, self.review_aggregator, self.predictor, self.node_dim,
@@ -260,9 +260,11 @@ class HEAR(Recommender):
             tot_mse = 0
             # tot_l2 = 0
             # tot_loss = 0
+            self.model.train()
             with tqdm(dataloader, disable=not self.verbose) as progress:
                 for i, (input_nodes, edge_subgraph, blocks) in enumerate(progress, 1):
-                    x = self.model(blocks, self.model.node_embedding(input_nodes))
+                    with torch.autocast(self.device):
+                        x = self.model(blocks, self.model.node_embedding(input_nodes))
 
                     pred = self.model.graph_predict(edge_subgraph, x)
 

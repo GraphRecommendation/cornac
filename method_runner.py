@@ -17,11 +17,11 @@ shared_hyperparameters = {
     'user_based': True,
     'verbose': False,
     # HEAR specific but does not affect other models
-    'review_aggregator': 'narre',
     'predictor': 'narre',
 }
 
 hear_hyperparameters = {
+    'review_aggregator': ['narre', 'narre-rel'],
     'weight_decay': [1e-6, 1e-5, 1e-4],
     'learning_rate': [0.0001, 0.001, 0.01],
     'dropout': np.linspace(0., 0.6, 7).round(1).tolist()
