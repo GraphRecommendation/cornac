@@ -254,7 +254,7 @@ class HEAR(Recommender):
 
         best_state = None
         best_score = float('inf')
-        no_improv = 0
+        best_epoch = 0
         epoch_length = len(dataloader)
         for e in range(self.num_epochs):
             tot_mse = 0
@@ -300,10 +300,9 @@ class HEAR(Recommender):
                         if self.model_selection == 'best' and mse < best_score:
                             best_state = deepcopy(self.model.state_dict())
                             best_score = mse
-                        else:
-                            no_improv += 1
+                            best_epoch = e
 
-            if self.early_stopping is not None and no_improv >= self.early_stopping:
+            if self.early_stopping is not None and (e - best_epoch) >= self.early_stopping:
                 break
 
         if best_state is not None:
