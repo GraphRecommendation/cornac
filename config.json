@@ -1,0 +1,5 @@
+{
+  "GPUS": 1,
+  "GPU_MULT": 1,
+  "BASE": "source .venv/bin/activate;"
+}

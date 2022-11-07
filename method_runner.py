@@ -1,5 +1,6 @@
 import concurrent
 import itertools
+import json
 import pickle
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -28,8 +29,8 @@ hear_hyperparameters = {
 
 kgat_hyperparameters = {
     'l2_weight': [1e-6, 1e-5, 1e-4],
-    'learning_rate': [0.0001, 0.001],
-    'dropout': [0., 0.1, 0.2]
+    'learning_rate': [0.00001, 0.0001, 0.001],
+    'dropout': np.linspace(0., 0.6, 7).tolist()
 }
 
 # narre_hyperparameters = {
@@ -37,9 +38,15 @@ kgat_hyperparameters = {
 #     'dropout',
 # }
 
-GPUS = list(range(1))
-GPUS = [g for _ in range(1) for g in GPUS]  # Multiplier for multiple processes per GPU.
-BASE_STR = 'source .venv/bin/activate;'
+with open('config.json') as f:
+    config = json.load(f)
+
+if isinstance(config['GPUS'], list):
+    GPUS = config['GPUS']
+else:
+    GPUS = list(range(config['GPUS']))
+GPUS = [g for _ in range(config['GPU_MULT']) for g in GPUS]  # Multiplier for multiple processes per GPU.
+BASE_STR = config['BASE']
 
 
 def process_runner(dataset, method, parameters, gpu):
