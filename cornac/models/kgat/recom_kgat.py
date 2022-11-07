@@ -186,6 +186,11 @@ class KGAT(Recommender):
         if self.trainable:
             self._fit(val_set)
 
+        if self.summary_writer is not None:
+            self.summary_writer.close()
+
+        return self
+
     def _fit(self, val_set):
         import dgl
         import torch
@@ -307,7 +312,7 @@ class KGAT(Recommender):
 
                     if self.summary_writer is not None:
                         self.summary_writer.add_scalar('train/transr/mse', mse_loss, e*transr_length+i)
-                        self.summary_writer.add_scalar('train/cf/l2', l2_loss, e*transr_length+i)
+                        self.summary_writer.add_scalar('train/transr/l2', l2_loss, e*transr_length+i)
 
                     if i != transr_length:
                         progress.set_description(f'Epoch {e}, '
