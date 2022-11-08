@@ -1,7 +1,5 @@
 import os
-from collections import Counter, defaultdict
 from copy import deepcopy
-from math import sqrt
 from tqdm import tqdm
 
 from ..recommender import Recommender
