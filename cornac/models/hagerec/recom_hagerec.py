@@ -16,11 +16,11 @@ class HAGERec(Recommender):
                  l2_weight=0,
                  node_dim=64,
                  relation_dim=64,
-                 layer_dims=None,
+                 layer_dim=64,
                  model_selection='best',
                  early_stopping=None,
                  tr_feat_dropout=.0,
-                 layer_dropouts=.1,
+                 layer_dropout=.1,
                  edge_dropouts=.0,
                  normalize=False,
                  user_based=True,
@@ -35,8 +35,8 @@ class HAGERec(Recommender):
 
         super(HAGERec, self).__init__(name)
         # Default values
-        if layer_dims is None:
-            layer_dims = [64, 32, 16]
+        if layer_dim is None:
+            layer_dim = [64, 32, 16]
 
         # CUDA
         self.use_cuda = use_cuda
@@ -51,12 +51,12 @@ class HAGERec(Recommender):
         self.l2_weight = l2_weight
         self.node_dim = node_dim
         self.relation_dim = relation_dim
-        self.layer_dims = layer_dims
-        self.n_layers = len(layer_dims)
+        self.layer_dims = layer_dim
+        self.n_layers = len(layer_dim)
         self.model_selection = model_selection
         self.early_stopping = early_stopping
         self.tr_feat_dropout = tr_feat_dropout
-        self.layer_dropouts = layer_dropouts
+        self.layer_dropouts = layer_dropout
         self.edge_dropouts = edge_dropouts
         self.normalize = normalize
         parameter_list = ['batch_size', 'learning_rate', 'l2_weight', 'node_dim', 'relation_dim', 'layer_dims',
@@ -176,7 +176,10 @@ class HAGERec(Recommender):
             with tqdm(cf_dataloader, disable=not self.verbose) as progress:
                 for i, (input_nodes, edge_subgraph, blocks) in enumerate(progress, 1):
                     emb = self.model.node_embedding(input_nodes)
-                    x = self.model(blocks, emb)
+                    x, conv_out, neighborhood, attentions = self.model(blocks, emb)
+
+                    # Update attention
+                    g.edata['a'][blocks[0].edata[dgl.EID]] = attentions.detach().to(g.edata['a'].device)
 
                     pred = self.model.graph_predict(edge_subgraph, x)
 

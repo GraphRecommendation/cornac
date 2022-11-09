@@ -51,7 +51,7 @@ def run(in_kwargs, dataset, method, save_dir='.'):
             'out_path': save_dir,
             'verbose': True
         }
-        parameters = list(inspect.signature(cornac.models.HEAR).parameters.keys())
+        model = cornac.models.HEAR
         # Same dropout
         if 'dropout' in in_kwargs:
             in_kwargs['layer_dropout'] = in_kwargs['dropout']
@@ -76,13 +76,34 @@ def run(in_kwargs, dataset, method, save_dir='.'):
             'out_path': save_dir,
             'verbose': True
         }
-        parameters = list(inspect.signature(cornac.models.KGAT).parameters.keys())
+        model = cornac.models.KGAT
         if 'dropout' in in_kwargs:
             in_kwargs['layer_dropouts'] = in_kwargs['dropout']
             in_kwargs['edge_dropouts'] = in_kwargs['dropout']
+    elif method == 'hagerec':
+        default_kwargs = {
+            'use_cuda': True,
+            'use_uva': False,
+            'batch_size': 256,
+            'num_workers': 5,
+            'num_epochs': 10,
+            'learning_rate': 0.0001,
+            'l2_weight': 1e-5,
+            'node_dim': 64,
+            'relation_dim': 64,
+            'layer_dim': 64,
+            'model_selection': 'best',
+            'layer_dropout': .5,
+            'edge_dropout': .1,
+            'user_based': user_based,
+            'debug': False,
+            'out_path': save_dir,
+            'verbose': True
+        }
+        model = cornac.models.HAGERec
     else:
         raise NotImplementedError
-
+    parameters = list(inspect.signature(model).parameters.keys())
     in_kwargs = {k: v for k, v in in_kwargs.items() if k in parameters}  # some python args are not relevant for model
     default_kwargs.update(in_kwargs)
 
@@ -118,12 +139,7 @@ def run(in_kwargs, dataset, method, save_dir='.'):
         verbose=default_kwargs.get('verbose', True),
     )
 
-    if method == 'hear':
-        model = cornac.models.HEAR(**default_kwargs)
-    elif method == 'kgat':
-        model = cornac.models.KGAT(**default_kwargs)
-    else:
-        raise NotImplementedError
+    model = model(**default_kwargs)
 
     cornac.Experiment(
         eval_method=eval_method, models=[model], metrics=[cornac.metrics.MSE(), cornac.metrics.RMSE()],

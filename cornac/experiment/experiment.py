@@ -147,7 +147,8 @@ class Experiment:
             output += "\nVALIDATION:\n...\n{}".format(self.val_result)
         output += "\nTEST:\n...\n{}".format(self.result)
 
-        print(output)
+        if self.verbose:
+            print(output)
 
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
         save_dir = "." if self.save_dir is None else self.save_dir

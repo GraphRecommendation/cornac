@@ -109,7 +109,8 @@ class InteractionSignalsUnit(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, n_nodes, n_relations, embed_dim, n_layers, num_heads, feat_dropout, edge_dropout):
+    def __init__(self, n_nodes, n_relations, embed_dim, n_layers, num_heads, feat_dropout, edge_dropout,
+                 use_sigmoid=False):
         super(Model, self).__init__()
 
         self.node_embedding = nn.Embedding(n_nodes, embed_dim)
@@ -124,21 +125,30 @@ class Model(nn.Module):
         self.w5 = nn.Linear(embed_dim, embed_dim)
         self.att = nn.Linear
         self.activation = nn.LeakyReLU()
-        self.sigmoid = nn.Sigmoid()
+        self.sigmoid = None
+
+        if use_sigmoid:
+            self.sigmoid = nn.Sigmoid()
 
     def forward(self, blocks, x):
         n_out_nodes = blocks[-1].num_dst_nodes()
         emb = []
         g = None
+        attentions = None
         for i, (layer, block) in enumerate(zip(self.hagerec_convs, blocks)):
             rel_emb = self.relation_embedding(blocks.edata['r_type'])
             if i + 1 == len(blocks):
                 x, g = layer(block, x, rel_emb, get_neighborhood=True)
+            elif i == 0:
+                x, attentions = layer(block, x, rel_emb, get_attention=True)
             else:
                 x = layer(block, x, rel_emb)
+
             emb.append(x[:n_out_nodes])
 
-        return x, torch.cat(emb), g
+        attentions = attentions.sum(dim=-1).squeeze(0)
+
+        return x, torch.cat(emb), g, attentions
 
     def aggregation(self, g, x, gn):
         with g.local_scope():
@@ -153,9 +163,22 @@ class Model(nn.Module):
 
     def graph_predict(self, g, src_feats, dst_feats, agg_feat):
         with g.local_scope():
+            # Get features and assign to graph
             src_agg, dst_agg = dgl.utils.expand_as_pair(agg_feat)
             g.srcdata.update({'u': src_feats, 'ua': src_agg})
             g.dstdata.update({'v': dst_feats, 'va': dst_agg})
+
+            # Assume that the attention is the similarity based on stacked embedding of each conv.
             g.apply_edges(dgl.function.u_dot_v('ua', 'va', 'a'))
+
+            # Normal dot product, eq. 23.
             g.apply_edges(dgl.function.u_dot_v('u', 'v', 'y_hat'))
-            return self.sigmoid(g.edata['a'] * g.edata['y_hat'])
+
+            # Use the attention, eq. 24.
+            preds = g.edata['a'] * g.edata['y_hat']
+
+            # Apply sigmoid. Not a good idea for rating prediction as a rating can over 1.
+            if self.sigmoid:
+                preds = self.sigmoid(preds)
+
+            return preds
