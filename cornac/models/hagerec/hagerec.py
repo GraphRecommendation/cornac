@@ -108,9 +108,9 @@ class InteractionSignalsUnit(nn.Module):
         pass
 
 
-class HAGERec(nn.Module):
+class Model(nn.Module):
     def __init__(self, n_nodes, n_relations, embed_dim, n_layers, num_heads, feat_dropout, edge_dropout):
-        super(HAGERec, self).__init__()
+        super(Model, self).__init__()
 
         self.node_embedding = nn.Embedding(n_nodes, embed_dim)
         self.relation_embedding = nn.Embedding(n_relations, embed_dim)
@@ -124,15 +124,21 @@ class HAGERec(nn.Module):
         self.w5 = nn.Linear(embed_dim, embed_dim)
         self.att = nn.Linear
         self.activation = nn.LeakyReLU()
+        self.sigmoid = nn.Sigmoid()
 
-    def forward(self, blocks, x, rel_emb):
+    def forward(self, blocks, x):
+        n_out_nodes = blocks[-1].num_dst_nodes()
+        emb = []
+        g = None
         for i, (layer, block) in enumerate(zip(self.hagerec_convs, blocks)):
+            rel_emb = self.relation_embedding(blocks.edata['r_type'])
             if i + 1 == len(blocks):
-                x = layer(block, x, rel_emb, get_neighborhood=True)
+                x, g = layer(block, x, rel_emb, get_neighborhood=True)
             else:
                 x = layer(block, x, rel_emb)
+            emb.append(x[:n_out_nodes])
 
-        return x
+        return x, torch.cat(emb), g
 
     def aggregation(self, g, x, gn):
         with g.local_scope():
@@ -145,6 +151,11 @@ class HAGERec(nn.Module):
 
             return u_feats, v_feats
 
-    def graph_predict(self, g, src_feats, dst_feats):
+    def graph_predict(self, g, src_feats, dst_feats, agg_feat):
         with g.local_scope():
-            pass
+            src_agg, dst_agg = dgl.utils.expand_as_pair(agg_feat)
+            g.srcdata.update({'u': src_feats, 'ua': src_agg})
+            g.dstdata.update({'v': dst_feats, 'va': dst_agg})
+            g.apply_edges(dgl.function.u_dot_v('ua', 'va', 'a'))
+            g.apply_edges(dgl.function.u_dot_v('u', 'v', 'y_hat'))
+            return self.sigmoid(g.edata['a'] * g.edata['y_hat'])

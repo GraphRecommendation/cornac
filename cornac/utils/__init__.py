@@ -19,6 +19,7 @@ from .common import get_rng
 from .download import cache
 from .fast_dot import fast_dot
 from .common import normalize
+from .graph_construction import *
 
 __all__ = ['validate_format',
            'estimate_batches',
