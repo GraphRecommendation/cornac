@@ -101,6 +101,9 @@ def run(in_kwargs, dataset, method, save_dir='.'):
             'verbose': True
         }
         model = cornac.models.HAGERec
+    elif method == 'trirank':
+        default_kwargs = {}
+        model = cornac.models.TriRank
     else:
         raise NotImplementedError
     parameters = list(inspect.signature(model).parameters.keys())
