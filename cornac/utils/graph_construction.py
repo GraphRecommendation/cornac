@@ -1,12 +1,9 @@
-from cornac.data import Dataset
-
-
-def create_heterogeneous_graph(train_set: Dataset):
+def create_heterogeneous_graph(train_set):
     """
     Create a graph with users, items, aspects and opinions.
     Parameters
     ----------
-    train_set
+    train_set : Dataset
 
     Returns
     -------
