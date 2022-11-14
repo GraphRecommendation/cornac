@@ -77,6 +77,7 @@ class HAGERec(Recommender):
         self.train_graph = None
         self.model = None
         self.n_items = 0
+        self.n_users = 0
         self.min_r = 0
         self.max_r = 0
 
@@ -96,12 +97,39 @@ class HAGERec(Recommender):
 
     def fit(self, train_set: Dataset, val_set=None):
         from .hagerec import Model
+        import dgl
 
         super().fit(train_set, val_set)
         self.train_graph, n_nodes, self.n_items, n_relations = create_heterogeneous_graph(train_set)
+        self.max_r, self.min_r = train_set.max_rating, train_set.min_rating
+
+        # Assumption: All graph layers based on the user/item gcn. It is therefore not possible an aspect node to
+        #             aggregate its neighbors. We therefore remove all in going edges to aspects and opinions.
+        # Remove in edges from nodes that are not users or items for proper item/user gcns.
+        nodes = self.train_graph.nodes()
+        self.n_users = len(train_set.uid_map)
+
+        # Convert train graph to heterogeneous graph with relations user-nodes and item-nodes. Nodes can be both
+        # users, items, aspects and opinions.
+
+        # Get users, items, and their neighbors.
+        u_n, u, u_eids = self.train_graph.in_edges(nodes[(nodes >= self.n_items) *
+                                                         (nodes < self.n_items + self.n_users)], form='all')
+        i_n, i, i_eids = self.train_graph.in_edges(nodes[nodes < self.n_items], form='all')
+
+        g = dgl.heterograph({
+            ('node', 'n_u', 'user'): (u_n, u),
+            ('node', 'n_i', 'item'): (i_n, i)
+        })
+
+        for etype, eids in [('n_u', u_eids), ('n_i', i_eids)]:
+            for data in self.train_graph.edata:
+                g.edges[etype].data[data] = self.train_graph.edata[data][eids]
+
+        self.train_graph = g
 
         # create model
-        self.model = Model(n_nodes, n_relations, self.node_dim, self.n_layers, self.num_heads,
+        self.model = Model(n_nodes, n_relations, g.etypes, self.node_dim, [64, 32, 16], self.num_heads,
                            self.layer_dropout, self.edge_dropout, use_sigmoid=self.use_sigmoid)
 
         self.model.reset_parameters()
@@ -124,21 +152,18 @@ class HAGERec(Recommender):
         import dgl
         import torch
         from torch import optim
+        from . import dgl_utils
 
         # Edges where label is non-zero and user and item occurs more than once.
         g = self.train_graph
-        u, v = g.edges()
-        mask = g.edata['label'] != 0
+        u, v = g.edges(etype='n_i')
+        mask = (u >= self.n_items) * (u < self.n_items + self.n_users)
         _, i, c = torch.unique(u, sorted=False, return_inverse=True, return_counts=True)
         mask *= c[i] > 1
         _, i, c = torch.unique(v, sorted=False, return_inverse=True, return_counts=True)
         mask *= (c[i] > 1)
-        cf_eids = g.edges(form='eid')[mask]
+        cf_eids = {'n_i': g.edges(form='eid', etype='n_i')[mask]}
         num_workers = self.num_workers
-
-        # Get reverse edge mapping.
-        n_edges = g.num_edges()
-        reverse_eids = torch.cat([torch.arange(n_edges // 2, n_edges), torch.arange(0, n_edges // 2)])
 
         if self.use_uva:
             # g = g.to(self.device)
@@ -152,11 +177,14 @@ class HAGERec(Recommender):
             thread = None
 
         # Create sampler
-        sampler = dgl.dataloading.NeighborSampler([10]*self.n_layers, prob='a')
-        sampler = dgl.dataloading.as_edge_prediction_sampler(sampler, exclude='reverse_id', reverse_eids=reverse_eids)
+        reverse_etypes = {'n_i': 'n_u', 'n_u': 'n_i'}
+        sampler = dgl_utils.HAGERecBlockSampler([10]*self.n_layers, self.n_users, self.n_items,
+                                                prob='a')
+        sampler = dgl.dataloading.as_edge_prediction_sampler(sampler, exclude='reverse_types',
+                                                             reverse_etypes=reverse_etypes)
         cf_dataloader = dgl.dataloading.DataLoader(g, cf_eids, sampler, batch_size=self.batch_size, shuffle=True,
-                                                drop_last=True, device=self.device, use_uva=self.use_uva,
-                                                num_workers=num_workers, use_prefetch_thread=thread)
+                                                   drop_last=True, device=self.device, use_uva=self.use_uva,
+                                                   num_workers=num_workers, use_prefetch_thread=thread)
         cf_length = len(cf_dataloader)
 
         # Initialize training params.
@@ -165,7 +193,6 @@ class HAGERec(Recommender):
         best_state = None
         best_score = float('inf')
         best_epoch = -1
-        self.min_r, self.max_r = min(g.edata['label']), max(g.edata['label'])
         for e in range(self.num_epochs):
             tot_mse = 0
             tot_l2 = 0
@@ -174,19 +201,19 @@ class HAGERec(Recommender):
             # CF
             with tqdm(cf_dataloader, disable=not self.verbose) as progress:
                 for i, (input_nodes, edge_subgraph, blocks) in enumerate(progress, 1):
-                    emb = self.model.node_embedding(input_nodes)
-                    x, conv_out, attentions = self.model(blocks, emb)
+                    emb = {ntype: self.model.node_embedding(input_nodes[ntype]) for ntype in input_nodes.keys()}
+                    x = self.model(blocks, emb)
 
                     # Update attention
-                    g.edata['a'][blocks[0].edata[dgl.EID]] = attentions.sum(1).detach().to(g.edata['a'].device)
-                    g.edata['a'] = dgl.ops.edge_softmax(g, g.edata['a'])
+                    # g.edata['a'][blocks[0].edata[dgl.EID]] = attentions.sum(1).detach().to(g.edata['a'].device)
+                    # g.edata['a'] = dgl.ops.edge_softmax(g, g.edata['a'])
 
-                    pred = self.model.graph_predict(edge_subgraph, x, conv_out)
+                    pred = self.model.graph_predict(edge_subgraph['n_i'], x)
 
                     if self.use_sigmoid:
-                        pred = pred * self.max_r + self.min_r
+                        pred = (self.max_r - self.min_r + pred) * self.max_r + self.min_r
 
-                    mse_loss = self.model.loss(pred, edge_subgraph.edata['label'])
+                    mse_loss = self.model.loss(pred, edge_subgraph['n_i'].edata['label'])
                     # l2_loss = self.l2_weight * self.model.l2_loss(edge_subgraph, emb)
                     loss = mse_loss #+ l2_loss
                     loss.backward()
@@ -244,8 +271,9 @@ class HAGERec(Recommender):
 
         self.model.eval()
         with torch.no_grad():
-            a = self.model.inference(self.train_graph, self.fanout, self.device, self.batch_size)
-            self.train_graph.edata['a'] = a.to(self.train_graph.edata['a'].device)
+            a = self.model.inference(self.train_graph, self.fanout, self.device, self.batch_size,
+                                     self.n_users, self.n_items)
+            # self.train_graph.edata['a'] = a.to(self.train_graph.edata['a'].device)
             ((mse, rmse), _) = rating_eval(self, [MSE(), RMSE()], val_set, user_based=self.user_based)
         return mse, rmse
 
@@ -258,7 +286,7 @@ class HAGERec(Recommender):
             item_idx = torch.tensor(item_idx, dtype=torch.int64).to(self.device)
             pred = self.model.predict(user_idx, item_idx).cpu()
             if self.use_sigmoid:
-                pred = pred * self.max_r + self.min_r
+                pred = (self.max_r - self.min_r + pred) * self.max_r + self.min_r
             return pred
 
     def monitor_value(self):

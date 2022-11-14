@@ -1,3 +1,4 @@
+import itertools
 
 import dgl
 import torch
@@ -72,6 +73,9 @@ class HAGERecConv(nn.Module):
             return {raw_att: e, att: self.attn_drop(dgl.ops.edge_softmax(g, e))}
 
     def forward(self, g, feat, r_feat, get_attention=False, get_neighborhood=False):
+        if not g.num_edges():
+            return []
+
         with g.local_scope():
             # Get features
             h_src, h_dst = dgl.utils.expand_as_pair(feat, g)
@@ -121,17 +125,30 @@ class HAGERecConv(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, n_nodes, n_relations, embed_dim, n_layers, num_heads, feat_dropout, edge_dropout,
+    def __init__(self, n_nodes, n_relations, etypes, embed_dim, layer_dims, num_heads, feat_dropout, edge_dropout,
                  use_sigmoid=False):
         super(Model, self).__init__()
 
         self.node_embedding = nn.Embedding(n_nodes, embed_dim)
         self.relation_embedding = nn.Embedding(n_relations, embed_dim)
 
-        self.hagerec_convs = nn.ModuleList(
-            [HAGERecConv(embed_dim, embed_dim, embed_dim, num_heads=num_heads, feat_drop=feat_dropout,
-                         attn_drop=edge_dropout, activation=nn.LeakyReLU()) for _ in range(n_layers)]
-        )
+        self.mlps = nn.ModuleList()
+        self.hagerec_convs = nn.ModuleList()
+
+        in_dim = embed_dim
+        for out_dim in layer_dims:
+            self.mlps.append(nn.Sequential(
+                nn.Linear(in_dim, out_dim),
+                nn.LeakyReLU()
+            ))
+            self.hagerec_convs.append(
+                dgl.nn.HeteroGraphConv({
+                    etype: HAGERecConv(in_dim, out_dim, out_dim, num_heads=num_heads, feat_drop=feat_dropout,
+                                       attn_drop=edge_dropout, activation=nn.LeakyReLU())
+                    for etype in etypes
+                })
+            )
+            in_dim = out_dim
 
         self.att = nn.Linear
         self.activation = nn.LeakyReLU()
@@ -151,24 +168,30 @@ class Model(nn.Module):
             else:
                 nn.init.xavier_normal_(parameter)
 
+    def _block_aggregator(self, g, x):
+        with g.local_scope():
+            for ntype in g.ntypes:
+                g.srcnodes[ntype].data.update({'h': x[ntype]})
+
+            g.multi_update_all({
+                etype: (dgl.function.copy_u('h', 'm'), dgl.function.sum('m', 'h')) for etype in g.etypes
+            }, 'sum')
+
+            return {ntype: g.dstnodes[ntype].data['h'] for ntype in g.ntypes}
+
     def forward(self, blocks, x):
         n_out_nodes = blocks[-1].num_dst_nodes()
-        emb = []
         attentions = None
-        for i, (layer, block) in enumerate(zip(self.hagerec_convs, blocks)):
-            rel_emb = self.relation_embedding(block.edata['type'])
-            # if i + 1 == len(blocks):
-            #     x, g = layer(block, x, rel_emb, get_neighborhood=True)
-            if i == 0:
-                x, attentions = layer(block, x, rel_emb, get_attention=True)
-            else:
-                x = layer(block, x, rel_emb)
+        rel_weight = self.relation_embedding.weight
+        blocks = [blocks[i:i+2] for i in range(0, len(blocks), 2)]
+        for i, (mlp, gcn, (block, agg_block)) in enumerate(zip(self.mlps, self.hagerec_convs, blocks)):
+            h = {ntype: mlp(x[ntype][:block.num_dst_nodes(ntype)]) for ntype in block.ntypes}
+            h.update(gcn(block,
+                    x, {etype: (rel_weight[block.edges[etype].data['type']],) for etype in block.etypes}))
+            rel_weight = mlp(rel_weight)
+            x = self._block_aggregator(agg_block, h)
 
-            emb.append(x[:n_out_nodes])
-
-        attentions = attentions.sum(dim=-1).squeeze(0)
-
-        return x, torch.cat(emb, dim=-1), attentions
+        return x
 
     # def aggregation(self, g, x, gn):
     #     # Assumption: We assume only the last layers output is used for the interaction signals unit.
@@ -182,16 +205,17 @@ class Model(nn.Module):
     #
     #         return u_feats, v_feats
 
-    def graph_predict(self, g, x, agg_feat):
+    def graph_predict(self, g, x):
         with g.local_scope():
             # Get features and assign to graph
             src_feats, dst_feats = dgl.utils.expand_as_pair(x, g)
-            src_agg, dst_agg = dgl.utils.expand_as_pair(agg_feat)
-            g.srcdata.update({'u': src_feats, 'ua': src_agg})
-            g.dstdata.update({'v': dst_feats, 'va': dst_agg})
+
+            for sntype, etype, dntype in g.canonical_etypes:
+                g.srcnodes[sntype].data.update({'u': src_feats[sntype]})
+                g.dstnodes[dntype].data.update({'v': dst_feats[dntype]})
 
             # Assume that the attention is the similarity based on stacked embedding of each conv.
-            g.apply_edges(dgl.function.u_dot_v('ua', 'va', 'a'))
+            # g.apply_edges(dgl.function.u_dot_v('ua', 'va', 'a'))
 
             # Normal dot product, eq. 23.
             g.apply_edges(dgl.function.u_dot_v('u', 'v', 'y_hat'))
@@ -208,9 +232,7 @@ class Model(nn.Module):
             return preds
 
     def predict(self, user, item):
-        a = self.agg_emb[user].dot(self.agg_emb[item])
         p = self.inf_emb[user].dot(self.inf_emb[item])
-        # p = a * p
 
         if self.sigmoid:
             p = self.sigmoid(p)
@@ -220,29 +242,40 @@ class Model(nn.Module):
     def loss(self, pred, target):
         return self.loss_fn(pred, target)
 
-    def inference(self, g, fanout, device, batch_size):
+    def inference(self, g, fanout, device, batch_size, *args):
+        from . import dgl_utils
         # g = g.to(device)
         # Calculate attention
-        emb = self.node_embedding(g.nodes().to(device))
-        a = self.hagerec_convs[0].calculate_attention(g.to(device), emb, emb, 'ra', 'a')['a']
-        a = a.sum(1).squeeze(-1)
-        g.edata['a'] = a.to(g.edata['a'].device)
+        emb = {ntype: self.node_embedding(g.nodes(ntype=ntype).to(device)) for ntype in g.ntypes}
+        # a = self.hagerec_convs[0].calculate_attention(g.to(device), emb, emb, 'ra', 'a')['a']
+        # a = a.sum(1).squeeze(-1)
+        # g.edata['a'] = a.to(g.edata['a'].device)
+        nodes = {ntype: g.nodes(ntype) for ntype in ['user', 'item']}
+        nodes['user'] = nodes['user'][nodes['user'] > max(nodes['item'])]
 
         g = dgl.sampling.select_topk(g, fanout, 'a')
         sampler = dgl.dataloading.MultiLayerFullNeighborSampler(1)
-        dataloader = dgl.dataloading.DataLoader(g, g.nodes(), sampler, batch_size=batch_size, shuffle=False,
-                                                drop_last=True, device=device)
+        dataloader = dgl.dataloading.DataLoader(g, nodes, sampler,
+                                                batch_size=batch_size, shuffle=False, drop_last=True, device=device)
 
-        next_emb = torch.zeros_like(emb)
         agg_feats = []
-        for layer in self.hagerec_convs:
-            for input_nodes, output_nodes, (block, ) in dataloader:
-                rel_emb = self.relation_embedding(block.edata['type'])
-                next_emb[output_nodes] = layer(block, emb[input_nodes], rel_emb)
+        rel_weight = self.relation_embedding.weight
+        for mlp, gcn in zip(self.mlps, self.hagerec_convs):
+            next_emb = {ntype: mlp(emb[ntype]) for ntype in g.ntypes}
+            for input_nodes, output_nodes, (block,) in dataloader:
+                block = dgl.edge_type_subgraph(block, [etype for etype in block.etypes if block.num_edges(etype=etype)])
 
+                rel_emb = {etype: (rel_weight[block.edges[etype].data['type']],) for etype in block.etypes}
+                in_emb = {ntype: emb[ntype][input_nodes[ntype]] for ntype in input_nodes}
+
+                for ntype, ne in gcn(block, in_emb, rel_emb).items():
+                    next_emb[ntype][output_nodes[ntype]] = ne
+
+            rel_weight = mlp(rel_weight)
             agg_feats.append(next_emb)
             emb = next_emb
 
-        self.inf_emb = emb
-        self.agg_emb = torch.cat(agg_feats, dim=-1)
-        return a
+        self.inf_emb = emb['node']
+        self.inf_emb[:emb['user'].shape[0]] = emb['user']
+        self.inf_emb[:emb['item'].shape[0]] = emb['item']
+        # return a
