@@ -7,15 +7,16 @@ from cornac.models import Recommender
 
 
 class TriRank(Recommender):
-    def __init__(self, name='TriRank'):
+    def __init__(self, name='TriRank', alpha=1, beta=1, gamma=1, mu_U=1, mu_P=1, mu_A=1, verbose=True, user_based=True):
         super().__init__(name)
-        self.alpha = 0.1
-        self.beta = 0.1
-        self.gamma = 0.1
-        self.mu_U = 0.1
-        self.mu_P = 0.1
-        self.mu_A = 0.1
-        self.verbose = True
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
+        self.mu_U = mu_U
+        self.mu_P = mu_P
+        self.mu_A = mu_A
+        self.verbose = verbose
+        self.user_based = user_based
 
         self.X = None
         self.Y = None
@@ -92,10 +93,11 @@ class TriRank(Recommender):
 
         # Only run if verbose and val set. Not used.
         if val_set is not None and self.verbose:
-            (mse,), _ = rating_eval(self, [MSE()], val_set, user_based=True, verbose=self.verbose)
-            (ndcg,), _ = ranking_eval(self, [NDCG(20), ], self.train_set, val_set, verbose=self.verbose)
+            k = 20
+            (mse,), _ = rating_eval(self, [MSE()], val_set, user_based=self.user_based, verbose=self.verbose)
+            (ndcg,), _ = ranking_eval(self, [NDCG(k)], self.train_set, val_set, verbose=self.verbose)
             if self.verbose:
-                print(f"MSE: {mse}, NDCG: {ndcg}")
+                print(f"MSE: {mse}, NDCG@{k}: {ndcg}")
 
     def _fit(self, user):
         # Algorithm 1: Online recommendation line 5
