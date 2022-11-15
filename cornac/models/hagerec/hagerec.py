@@ -56,6 +56,8 @@ class HAGERecConv(nn.Module):
 
             rr2 = edges.data[edge]
             a = edges.data[att]
+            # Assumption: Softmax is a normalization of the neighborhood.
+            # Assumption: \cdot is element-wise multiplication.
             return {out: torch.softmax(env * rr2.unsqueeze(1) * a, dim=-1)}
         return func
 
@@ -70,6 +72,8 @@ class HAGERecConv(nn.Module):
             g.apply_edges(dgl.function.u_add_v('en', 'ev', 'a'))
             e = self.leaky_relu(g.edata.pop('a'))  # (num_src_edge, num_heads, out_dim)
             e = (e * self.attn).sum(dim=-1).unsqueeze(dim=2)  # (num_edge, num_heads, 1)
+
+            # eq 9.
             return {raw_att: e, att: self.attn_drop(dgl.ops.edge_softmax(g, e))}
 
     def forward(self, g, feat, r_feat, get_attention=False, get_neighborhood=False):
@@ -98,7 +102,7 @@ class HAGERecConv(nn.Module):
             # eq. 4/5
             rst = self.w1(h_dst + g.dstdata['g'])
 
-            # eq. 18/19
+            # eq. 18/19, Assumption: \times is element-wise multiplication.
             interaction = self.w4(torch.mul(h_dst, g.dstdata['g']))
 
             # activation
@@ -106,7 +110,8 @@ class HAGERecConv(nn.Module):
                 rst = self.activation(rst)
                 interaction = self.activation(interaction)
 
-            # eq. 20/21
+            # Assumption: Eq. 20/21 is executed at each layer and is the output.
+            # eq. 20/21, aka bi-interaction of kgat or bi-directional propagation
             rst = rst + interaction
 
             if get_attention:
@@ -142,7 +147,7 @@ class Model(nn.Module):
                 nn.LeakyReLU()
             ))
             self.hagerec_convs.append(
-                dgl.nn.HeteroGraphConv({
+                nn.ModuleDict({
                     etype: HAGERecConv(in_dim, out_dim, out_dim, num_heads=num_heads, feat_drop=feat_dropout,
                                        attn_drop=edge_dropout, activation=nn.LeakyReLU())
                     for etype in etypes
@@ -179,31 +184,45 @@ class Model(nn.Module):
 
             return {ntype: g.dstnodes[ntype].data['h'] for ntype in g.ntypes}
 
+    def _hetero_aggregator(self, modules: nn.ModuleDict, g, x, rel_x, attention=False):
+        # IMPORTANT: ASSUME NO OVERLAPPING DST TYPES.
+        h = {}
+        a = {}
+        src_inputs = x
+        dst_inputs = {k: v[:g.number_of_dst_nodes(k)] for k, v in x.items()}
+        for stype, etype, dtype in g.canonical_etypes:
+                rel_graph = g[stype, etype, dtype]
+                if stype not in src_inputs or dtype not in dst_inputs or not rel_graph.num_edges():
+                    continue
+                if attention:
+                    h[dtype], a[etype] = \
+                        modules[etype](rel_graph, (src_inputs[stype], dst_inputs[dtype]), rel_x[etype], attention)
+                else:
+                    h[dtype] = modules[etype](rel_graph, (src_inputs[stype], dst_inputs[dtype]), rel_x[etype])
+
+        if attention:
+            return h, a
+        else:
+            return h
+
     def forward(self, blocks, x):
-        n_out_nodes = blocks[-1].num_dst_nodes()
-        attentions = None
         rel_weight = self.relation_embedding.weight
         blocks = [blocks[i:i+2] for i in range(0, len(blocks), 2)]
+        a = None
         for i, (mlp, gcn, (block, agg_block)) in enumerate(zip(self.mlps, self.hagerec_convs, blocks)):
             h = {ntype: mlp(x[ntype][:block.num_dst_nodes(ntype)]) for ntype in block.ntypes}
-            h.update(gcn(block,
-                    x, {etype: (rel_weight[block.edges[etype].data['type']],) for etype in block.etypes}))
+            if i != 0:
+                h.update(self._hetero_aggregator(
+                    gcn, block, x, {etype: rel_weight[block.edges[etype].data['type']] for etype in block.etypes}))
+            else:
+                o, a = self._hetero_aggregator(
+                    gcn, block, x, {etype: rel_weight[block.edges[etype].data['type']] for etype in block.etypes}, True
+                )
+                h.update(o)
             rel_weight = mlp(rel_weight)
             x = self._block_aggregator(agg_block, h)
 
-        return x
-
-    # def aggregation(self, g, x, gn):
-    #     # Assumption: We assume only the last layers output is used for the interaction signals unit.
-    #     with g.local_scope():
-    #         src_feats, dst_feats = dgl.utils.expand_as_pair(x, g)
-    #         g_src_feats, g_dst_feats = dgl.utils.expand_as_pair(gn, g)
-    #
-    #         # eq 20, 21
-    #         v_feats = self.activation(self.w4(dst_feats + g_dst_feats))
-    #         u_feats = self.activation(self.w5(src_feats + g_src_feats))
-    #
-    #         return u_feats, v_feats
+        return x, a
 
     def graph_predict(self, g, x):
         with g.local_scope():
@@ -214,16 +233,13 @@ class Model(nn.Module):
                 g.srcnodes[sntype].data.update({'u': src_feats[sntype]})
                 g.dstnodes[dntype].data.update({'v': dst_feats[dntype]})
 
-            # Assume that the attention is the similarity based on stacked embedding of each conv.
-            # g.apply_edges(dgl.function.u_dot_v('ua', 'va', 'a'))
-
             # Normal dot product, eq. 23.
             g.apply_edges(dgl.function.u_dot_v('u', 'v', 'y_hat'))
 
-            preds = g.edata['y_hat']
+            # Eq 24 is not properly defined and the 'prediction-level attention' is not utilized.
+            # Furthermore, during training and prediction a user and item would NEVER be connected by one hop.
 
-            # Use the attention, eq. 24.
-            # preds = g.edata['a'] * g.edata['y_hat']
+            preds = g.edata['y_hat']
 
             # Apply sigmoid. Not a good idea for rating prediction as a rating can over 1.
             if self.sigmoid:
@@ -239,17 +255,24 @@ class Model(nn.Module):
 
         return p
 
-    def loss(self, pred, target):
-        return self.loss_fn(pred, target)
+    def rank(self, user, items):
+        raise NotImplementedError
 
-    def inference(self, g, fanout, device, batch_size, *args):
-        from . import dgl_utils
-        # g = g.to(device)
+    def loss(self, pred, target):
+        return self.loss_fn(pred, target.unsqueeze(-1))
+
+    def inference(self, g, fanout, device, batch_size):
         # Calculate attention
         emb = {ntype: self.node_embedding(g.nodes(ntype=ntype).to(device)) for ntype in g.ntypes}
-        # a = self.hagerec_convs[0].calculate_attention(g.to(device), emb, emb, 'ra', 'a')['a']
-        # a = a.sum(1).squeeze(-1)
-        # g.edata['a'] = a.to(g.edata['a'].device)
+        attention = {}
+        for etype, gcn in self.hagerec_convs[0].items():
+            stype, _, dtype = g[etype].canonical_etypes[0]
+            a = gcn.calculate_attention(g[etype].to(device), emb[stype], emb[dtype], 'ra', 'a')
+            for iden, val in a.items():
+                val = val.sum(1).squeeze(-1)
+                g.edges[etype].data[iden] = val.to(g.edges[etype].data[iden].device)
+                a[iden] = val
+            attention[etype] = a
         nodes = {ntype: g.nodes(ntype) for ntype in ['user', 'item']}
         nodes['user'] = nodes['user'][nodes['user'] > max(nodes['item'])]
 
@@ -263,12 +286,9 @@ class Model(nn.Module):
         for mlp, gcn in zip(self.mlps, self.hagerec_convs):
             next_emb = {ntype: mlp(emb[ntype]) for ntype in g.ntypes}
             for input_nodes, output_nodes, (block,) in dataloader:
-                block = dgl.edge_type_subgraph(block, [etype for etype in block.etypes if block.num_edges(etype=etype)])
-
-                rel_emb = {etype: (rel_weight[block.edges[etype].data['type']],) for etype in block.etypes}
+                rel_emb = {etype: rel_weight[block.edges[etype].data['type']] for etype in block.etypes}
                 in_emb = {ntype: emb[ntype][input_nodes[ntype]] for ntype in input_nodes}
-
-                for ntype, ne in gcn(block, in_emb, rel_emb).items():
+                for ntype, ne in self._hetero_aggregator(gcn, block, in_emb, rel_emb).items():
                     next_emb[ntype][output_nodes[ntype]] = ne
 
             rel_weight = mlp(rel_weight)
@@ -278,4 +298,4 @@ class Model(nn.Module):
         self.inf_emb = emb['node']
         self.inf_emb[:emb['user'].shape[0]] = emb['user']
         self.inf_emb[:emb['item'].shape[0]] = emb['item']
-        # return a
+        return attention

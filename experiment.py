@@ -101,6 +101,9 @@ def run(in_kwargs, dataset, method, save_dir='.'):
             'verbose': True
         }
         model = cornac.models.HAGERec
+        if 'dropout' in in_kwargs:
+            in_kwargs['layer_dropouts'] = in_kwargs['dropout']
+            in_kwargs['edge_dropouts'] = in_kwargs['dropout']
     elif method == 'trirank':
         default_kwargs = {}
         model = cornac.models.TriRank
