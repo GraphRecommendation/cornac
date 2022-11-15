@@ -126,6 +126,8 @@ class HAGERec(Recommender):
             for data in self.train_graph.edata:
                 g.edges[etype].data[data] = self.train_graph.edata[data][eids]
 
+            g.edges[etype].data['ra'] = g.edges[etype].data['a']
+
         self.train_graph = g
 
         # create model
@@ -202,11 +204,13 @@ class HAGERec(Recommender):
             with tqdm(cf_dataloader, disable=not self.verbose) as progress:
                 for i, (input_nodes, edge_subgraph, blocks) in enumerate(progress, 1):
                     emb = {ntype: self.model.node_embedding(input_nodes[ntype]) for ntype in input_nodes.keys()}
-                    x = self.model(blocks, emb)
+                    x, attentions = self.model(blocks, emb)
 
-                    # Update attention
-                    # g.edata['a'][blocks[0].edata[dgl.EID]] = attentions.sum(1).detach().to(g.edata['a'].device)
-                    # g.edata['a'] = dgl.ops.edge_softmax(g, g.edata['a'])
+                    # Update attention. Uses 'raw attention' (non-normalized) to compute actual attention
+                    for etype, a in attentions.items():
+                        g.edges[etype].data['ra'][blocks[0].edges[etype].data[dgl.EID]] \
+                            = a.sum(1).squeeze().detach().to(g.edges[etype].data['ra'].device)
+                        g.edges[etype].data['a'] = dgl.ops.edge_softmax(g[etype], g.edges[etype].data['ra'])
 
                     pred = self.model.graph_predict(edge_subgraph['n_i'], x)
 
@@ -271,10 +275,13 @@ class HAGERec(Recommender):
 
         self.model.eval()
         with torch.no_grad():
-            a = self.model.inference(self.train_graph, self.fanout, self.device, self.batch_size,
-                                     self.n_users, self.n_items)
-            # self.train_graph.edata['a'] = a.to(self.train_graph.edata['a'].device)
-            ((mse, rmse), _) = rating_eval(self, [MSE(), RMSE()], val_set, user_based=self.user_based)
+            attention = self.model.inference(self.train_graph, self.fanout, self.device, self.batch_size)
+            for etype, a in attention.items():
+                device = self.train_graph.edges[etype].data['a'].device
+                for iden, val in a.items():
+                    self.train_graph.edges[etype].data[iden] = val.to(device)
+            if val_set is not None:
+                ((mse, rmse), _) = rating_eval(self, [MSE(), RMSE()], val_set, user_based=self.user_based)
         return mse, rmse
 
     def score(self, user_idx, item_idx=None):
