@@ -222,7 +222,8 @@ class Model(nn.Module):
             self.w_1 = nn.Linear(final_dim, 1, bias=False)
 
         self.rating_loss_fn = nn.MSELoss(reduction='mean')
-        self.ranking_loss_fn = nn.ReLU()
+        self.ccl_loss_fn = nn.ReLU()
+        self.bpr_loss_fn = nn.Softplus()
         self.review_embs = None
         self.inf_emb = None
 
@@ -301,17 +302,29 @@ class Model(nn.Module):
     def rating_loss(self, preds, target):
         return self.rating_loss_fn(preds, target.unsqueeze(-1))
 
-    def ranking_loss(self, preds_i, preds_j, w, m):
+    def _bpr_loss(self, preds_i, preds_j):
+        return self.bpr_loss_fn(- (preds_i - preds_j))
+
+    def _ccl_loss(self, preds_i, preds_j, w, m):
         # (1 - i) + w * 1/|N| * sum(max(0, j - m) for j in N
         # EQ. 1 in SimpleX, but based on code in:
         # https://github.com/xue-pai/MatchBox/blob/master/deem/pytorch/losses/cosine_contrastive_loss.py
-        pos_loss = self.ranking_loss_fn(1 - preds_i)
-        bpr = - torch.log2(torch.sigmoid(preds_i - preds_j)).mean(-1, keepdims=True)
-        neg_loss = self.ranking_loss_fn(preds_j - m)
+        pos_loss = self.ccl_loss_fn(1 - preds_i)
+        neg_loss = self.ccl_loss_fn(preds_j - m)
         neg_loss = neg_loss.mean(dim=-1, keepdims=True)
         if w is not None:
             neg_loss *= w
-        loss = pos_loss + neg_loss #+ bpr
+
+        return pos_loss + neg_loss
+
+    def ranking_loss(self, preds_i, preds_j, loss_fn, *args):
+        if loss_fn == 'bpr':
+            loss = self._bpr_loss(preds_i, preds_j)
+        elif loss_fn == 'ccl':
+            loss = self._ccl_loss(preds_i, preds_j, *args)
+        else:
+            raise NotImplementedError
+
         return loss.mean()
 
     def l2_loss(self, nodes):

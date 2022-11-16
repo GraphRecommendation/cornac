@@ -23,6 +23,7 @@ class HEAR(Recommender):
                  fanout=5,
                  model_selection='best',
                  objective='ranking',
+                 ranking_loss='bpr',
                  review_aggregator='narre',
                  predictor='gatv2',
                  num_neg_samples=50,
@@ -63,6 +64,7 @@ class HEAR(Recommender):
         self.fanout = fanout
         self.model_selection = model_selection
         self.objective = objective
+        self.ranking_loss = ranking_loss
         self.review_aggregator = review_aggregator
         self.predictor = predictor
         self.num_neg_samples = num_neg_samples
@@ -97,6 +99,7 @@ class HEAR(Recommender):
         assert use_uva == use_cuda or not use_uva, 'use_cuda must be true when using uva.'
         assert objective == 'ranking' or objective == 'rating', f'This method only supports ranking or rating, ' \
                                                                 f'not {objective}.'
+        assert ranking_loss == 'bpr' or ranking_loss == 'ccl', f'Only bpr and ccl are supported not {ranking_loss}.'
 
     def _create_graphs(self, train_set: Dataset):
         import dgl
@@ -295,7 +298,7 @@ class HEAR(Recommender):
                     if self.objective == 'ranking':
                         pred_j = self.model.graph_predict(neg_subgraph, x).reshape(-1, self.num_neg_samples)
                         acc = (pred > pred_j).sum() / pred_j.shape.numel()
-                        loss = self.model.ranking_loss(pred, pred_j, self.neg_weight, self.margin)
+                        loss = self.model.ranking_loss(pred, pred_j, self.ranking_loss, self.neg_weight, self.margin)
                         cur_losses['loss'] = loss.detach()
                         cur_losses['acc'] = acc.detach()
                     else:
@@ -313,12 +316,12 @@ class HEAR(Recommender):
 
                     optimizer.step()
                     optimizer.zero_grad()
-                    loss_str = ','.join([f'{k}: {v/i:.5f}' for k, v in tot_losses.items()])
+                    loss_str = ','.join([f'{k}:{v/i:.3f}' for k, v in tot_losses.items()])
                     if i != epoch_length or val_set is None:
                         progress.set_description(f'Epoch {e}, ' + loss_str)
                     else:
                         results = self._validate(val_set, metrics)
-                        res_str = 'Val: ' + ', '.join([f'{m.name}: {r:.3f}' for m, r in zip(metrics, results)])
+                        res_str = 'Val: ' + ', '.join([f'{m.name}:{r:.4f}' for m, r in zip(metrics, results)])
                         progress.set_description(f'Epoch {e}, ' + f'{loss_str}, ' + res_str)
 
                         if self.summary_writer is not None:
