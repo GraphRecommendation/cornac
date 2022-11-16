@@ -26,6 +26,7 @@ import sys
 
 def run(in_kwargs, dataset, method, save_dir='.'):
     user_based = in_kwargs.pop('user_based', True)
+    objective = in_kwargs['objective'] = in_kwargs.get('objective', 'ranking')  # Ranking is default
 
     if method == 'hear':
         default_kwargs = {
@@ -147,8 +148,15 @@ def run(in_kwargs, dataset, method, save_dir='.'):
 
     model = model(**default_kwargs)
 
+    if objective == 'ranking':
+        metrics = [cornac.metrics.NDCG(), cornac.metrics.AUC()]
+    elif objective == 'rating':
+        metrics = [cornac.metrics.MSE(), cornac.metrics.RMSE()]
+    else:
+        raise ValueError(f'No metrics for objective: {objective}.')
+
     cornac.Experiment(
-        eval_method=eval_method, models=[model], metrics=[cornac.metrics.MSE(), cornac.metrics.RMSE()],
+        eval_method=eval_method, models=[model], metrics=metrics,
         user_based=user_based, save_dir=save_dir, verbose=default_kwargs.get('verbose', True)
     ).run()
 

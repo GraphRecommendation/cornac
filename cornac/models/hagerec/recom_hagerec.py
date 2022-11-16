@@ -1,7 +1,9 @@
 import os
+from collections import defaultdict
 from copy import deepcopy
 from tqdm import tqdm
 
+import cornac.metrics
 from ..recommender import Recommender
 from ...data import Dataset
 from ...utils import create_heterogeneous_graph
@@ -21,6 +23,7 @@ class HAGERec(Recommender):
                  fanout=10,
                  layer_dim=64,
                  model_selection='best',
+                 objective='ranking',
                  early_stopping=None,
                  layer_dropout=.1,
                  edge_dropout=.0,
@@ -58,6 +61,7 @@ class HAGERec(Recommender):
         self.n_layers = n_layers
         self.fanout = fanout
         self.model_selection = model_selection
+        self.objective = objective
         self.early_stopping = early_stopping
         self.layer_dropout = layer_dropout
         self.edge_dropout = edge_dropout
@@ -94,12 +98,14 @@ class HAGERec(Recommender):
 
         # assertions
         assert use_uva == use_cuda or not use_uva, 'use_cuda must be true when using uva.'
+        assert objective == 'ranking' or objective == 'rating', f'This method only supports ranking or rating, ' \
+                                                                f'not {objective}.'
 
     def _assign_attention(self, g, attention):
         for etype, a in attention.items():
-                device = self.train_graph.edges[etype].data['a'].device
-                for iden, val in a.items():
-                    g.edges[etype].data[iden] = val.to(device)
+            device = self.train_graph.edges[etype].data['a'].device
+            for iden, val in a.items():
+                g.edges[etype].data[iden] = val.to(device)
 
     def fit(self, train_set: Dataset, val_set=None):
         from .hagerec import Model
@@ -186,10 +192,17 @@ class HAGERec(Recommender):
 
         # Create sampler
         reverse_etypes = {'n_i': 'n_u', 'n_u': 'n_i'}
-        sampler = dgl_utils.HAGERecBlockSampler([10]*self.n_layers, self.n_users, self.n_items,
+        sampler = dgl_utils.HAGERecBlockSampler([10] * self.n_layers, self.n_users, self.n_items,
                                                 prob='a')
+        if self.objective == 'ranking':
+            neg_sampler = cornac.utils.dgl.UniformItemSampler(1, self.train_set.num_items)
+        else:
+            neg_sampler = None
+
         sampler = dgl.dataloading.as_edge_prediction_sampler(sampler, exclude='reverse_types',
+                                                             negative_sampler=neg_sampler,
                                                              reverse_etypes=reverse_etypes)
+
         cf_dataloader = dgl.dataloading.DataLoader(g, cf_eids, sampler, batch_size=self.batch_size, shuffle=True,
                                                    drop_last=True, device=self.device, use_uva=self.use_uva,
                                                    num_workers=num_workers, use_prefetch_thread=thread)
@@ -198,17 +211,26 @@ class HAGERec(Recommender):
         # Initialize training params.
         cf_optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
+        if self.objective == 'ranking':
+            metrics = [cornac.metrics.NDCG()]
+        else:
+            metrics = [cornac.metrics.MSE()]
+
         best_state = None
         best_score = float('inf')
         best_epoch = -1
         for e in range(self.num_epochs):
-            tot_mse = 0
-            tot_l2 = 0
-            tot_loss = 0
+            tot_losses = defaultdict(int)
+            cur_losses = {}
             self.model.train()
             # CF
             with tqdm(cf_dataloader, disable=not self.verbose) as progress:
-                for i, (input_nodes, edge_subgraph, blocks) in enumerate(progress, 1):
+                for i, batch in enumerate(progress, 1):
+                    if self.objective == 'ranking':
+                        input_nodes, edge_subgraph, neg_subgraph, blocks = batch
+                    else:
+                        input_nodes, edge_subgraph, blocks = batch
+
                     emb = {ntype: self.model.node_embedding(input_nodes[ntype]) for ntype in input_nodes.keys()}
                     x, attentions = self.model(blocks, emb)
 
@@ -220,44 +242,48 @@ class HAGERec(Recommender):
 
                     pred = self.model.graph_predict(edge_subgraph['n_i'], x)
 
-                    if self.use_sigmoid:
+                    if self.use_sigmoid and self.objective == 'rating':
                         pred = (self.max_r - self.min_r + pred) * self.max_r + self.min_r
 
-                    mse_loss = self.model.loss(pred, edge_subgraph['n_i'].edata['label'])
-                    # l2_loss = self.l2_weight * self.model.l2_loss(edge_subgraph, emb)
-                    loss = mse_loss #+ l2_loss
-                    loss.backward()
+                    if self.objective == 'ranking':
+                        pred_j = self.model.graph_predict(neg_subgraph['n_i'], x)
+                        acc = (pred > pred_j).sum() / pred_j.shape.numel()
+                        loss = self.model.ranking_loss(pred, pred_j)
+                        cur_losses['loss'] = loss.detach()
+                        cur_losses['acc'] = acc.detach()
+                    else:
+                        loss = self.model.rating_loss(pred, edge_subgraph['n_i'].edata['label'])
+                        cur_losses['loss'] = loss.detach()
 
-                    tot_mse += mse_loss.detach()
-                    # tot_l2 += l2_loss.detach()
-                    tot_loss += loss.detach()
+                    loss = loss
+                    loss.backward()
+                    for k, v in cur_losses.items():
+                        tot_losses[k] += v
 
                     cf_optimizer.step()
                     cf_optimizer.zero_grad()
 
                     if self.summary_writer is not None:
-                        self.summary_writer.add_scalar('train/cf/mse', mse_loss, e*cf_length+i)
-                        # self.summary_writer.add_scalar('train/cf/l2', l2_loss, e*cf_length+i)
+                        for k, v in cur_losses.items():
+                            self.summary_writer.add_scalar(f'train/cf/{k}', v, e * cf_length + i)
 
+                    loss_str = ','.join([f'{k}: {v/i:.5f}' for k, v in tot_losses.items()])
                     if i != cf_length:
-                        progress.set_description(f'Epoch {e}, '
-                                             f'MSE:{tot_mse / i:.5f}'
-                                             # f',L2:{tot_l2 / i:.3g}'
-                                             # f',Tot:{tot_loss / i:.5f}'
-                                             )
+                        progress.set_description(f'Epoch {e}, ' + loss_str)
                     else:
                         if val_set is not None:
-                            mse, rmse = self._validate(val_set)
-                            progress.set_description(f'Epoch {e}, MSE: {tot_mse / i:.5f}, Val: MSE: {mse:.5f}, '
-                                                     f'RMSE: {rmse:.5f}')
+                            results = self._validate(val_set, metrics)
+                            res_str = 'Val: ' + ', '.join([f'{m.name}: {r:.3f}' for m, r in zip(metrics, results)])
+                            progress.set_description(f'Epoch {e}, ' + f'{loss_str}, ' + res_str)
 
                             if self.summary_writer is not None:
-                                self.summary_writer.add_scalar('val/mse', mse, e)
-                                self.summary_writer.add_scalar('val/rmse', rmse, e)
+                                for m, r in zip(metrics, results):
+                                    self.summary_writer.add_scalar(f'val/{m.name}', r, e)
 
-                            if self.model_selection == 'best' and mse < best_score:
+                            if self.model_selection == 'best' and (results[0] > best_score if metrics[0].higher_better
+                            else results[0] < best_score):
                                 best_state = deepcopy(self.model.state_dict())
-                                best_score = mse
+                                best_score = results[0]
                                 best_epoch = e
 
             if self.early_stopping is not None and e - best_epoch >= self.early_stopping:
@@ -269,14 +295,13 @@ class HAGERec(Recommender):
             self._assign_attention(self.train_graph, a)
 
         if val_set is not None and self.summary_writer is not None:
-            mse, rmse = self._validate(val_set)
-            self.summary_writer.add_hparams(self.parameters, {'mse': mse, 'rmse': rmse})
+            results = self._validate(val_set, metrics)
+            self.summary_writer.add_hparams(self.parameters, dict(zip([m.name for m in metrics], results)))
 
-        _ = self._validate(val_set)
+        _ = self._validate(val_set, metrics)
 
-    def _validate(self, val_set):
-        from ...eval_methods.base_method import rating_eval
-        from ...metrics import MSE, RMSE
+    def _validate(self, val_set, metrics):
+        from ...eval_methods.base_method import rating_eval, ranking_eval
         import torch
 
         self.model.eval()
@@ -284,8 +309,11 @@ class HAGERec(Recommender):
             attention = self.model.inference(self.train_graph, self.fanout, self.device, self.batch_size)
             self._assign_attention(self.train_graph, attention)
             if val_set is not None:
-                ((mse, rmse), _) = rating_eval(self, [MSE(), RMSE()], val_set, user_based=self.user_based)
-        return mse, rmse
+                if self.objective == 'ranking':
+                    (result, _) = ranking_eval(self, metrics, self.train_set, val_set)
+                else:
+                    (result, _) = rating_eval(self, metrics, val_set, user_based=self.user_based)
+        return result
 
     def score(self, user_idx, item_idx=None):
         import torch
@@ -293,11 +321,17 @@ class HAGERec(Recommender):
         self.model.eval()
         with torch.no_grad():
             user_idx = torch.tensor(user_idx + self.n_items, dtype=torch.int64).to(self.device)
-            item_idx = torch.tensor(item_idx, dtype=torch.int64).to(self.device)
+            if item_idx is None:
+                item_idx = torch.arange(self.n_items, dtype=torch.int64).to(self.device)
+            else:
+                item_idx = torch.tensor(item_idx, dtype=torch.int64).to(self.device)
+
             pred = self.model.predict(user_idx, item_idx).cpu()
-            if self.use_sigmoid:
+
+            if self.use_sigmoid and self.objective != 'ranking':
                 pred = (self.max_r - self.min_r + pred) * self.max_r + self.min_r
-            return pred
+
+            return pred.numpy()
 
     def monitor_value(self):
         pass

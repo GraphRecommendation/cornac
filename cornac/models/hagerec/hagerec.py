@@ -162,7 +162,8 @@ class Model(nn.Module):
         if use_sigmoid:
             self.sigmoid = nn.Sigmoid()
 
-        self.loss_fn = nn.MSELoss()
+        self.rating_loss_fn = nn.MSELoss()
+        self.ranking_loss_fn = nn.Softplus()
         self.inf_emb = None
         self.agg_emb = None
 
@@ -248,18 +249,19 @@ class Model(nn.Module):
             return preds
 
     def predict(self, user, item):
-        p = self.inf_emb[user].dot(self.inf_emb[item])
+        p = (self.inf_emb[user] * self.inf_emb[item]).sum(-1)
 
         if self.sigmoid:
             p = self.sigmoid(p)
 
         return p
 
-    def rank(self, user, items):
-        raise NotImplementedError
+    def rating_loss(self, pred, target):
+        return self.rating_loss_fn(pred, target.unsqueeze(-1))
 
-    def loss(self, pred, target):
-        return self.loss_fn(pred, target.unsqueeze(-1))
+    def ranking_loss(self, pred_i, pred_j):
+        # -ln sig(-x) is equivalent to softplus(x)
+        return self.ranking_loss_fn(- (pred_i - pred_j)).mean()
 
     def inference(self, g, fanout, device, batch_size):
         # Calculate attention
