@@ -108,6 +108,9 @@ def run(in_kwargs, dataset, method, save_dir='.'):
     elif method == 'trirank':
         default_kwargs = {}
         model = cornac.models.TriRank
+    elif method == 'most-pop':
+        default_kwargs = {}
+        model = cornac.models.MostPop
     else:
         raise NotImplementedError
     parameters = list(inspect.signature(model).parameters.keys())
