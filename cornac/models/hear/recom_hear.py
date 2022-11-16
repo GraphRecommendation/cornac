@@ -22,8 +22,12 @@ class HEAR(Recommender):
                  num_heads=3,
                  fanout=5,
                  model_selection='best',
+                 objective='ranking',
                  review_aggregator='narre',
                  predictor='gatv2',
+                 num_neg_samples=50,
+                 margin=0.9,
+                 neg_weight=500,
                  layer_dropout=None,
                  attention_dropout=.2,
                  user_based=True,
@@ -58,8 +62,12 @@ class HEAR(Recommender):
         self.num_heads = num_heads
         self.fanout = fanout
         self.model_selection = model_selection
+        self.objective = objective
         self.review_aggregator = review_aggregator
         self.predictor = predictor
+        self.num_neg_samples = num_neg_samples
+        self.margin = margin
+        self.neg_weight = neg_weight
         self.layer_dropout = layer_dropout
         self.attention_dropout = attention_dropout
         parameter_list = ['batch_size', 'learning_rate', 'weight_decay', 'node_dim', 'review_dim',
@@ -87,6 +95,8 @@ class HEAR(Recommender):
 
         # assertions
         assert use_uva == use_cuda or not use_uva, 'use_cuda must be true when using uva.'
+        assert objective == 'ranking' or objective == 'rating', f'This method only supports ranking or rating, ' \
+                                                                f'not {objective}.'
 
     def _create_graphs(self, train_set: Dataset):
         import dgl
@@ -218,6 +228,7 @@ class HEAR(Recommender):
         import torch
         from torch import optim
         from . import dgl_utils
+        import cornac
 
         # Get graph and edges
         g = self.train_graph
@@ -243,63 +254,81 @@ class HEAR(Recommender):
 
         # Create sampler
         sampler = dgl_utils.HearBlockSampler(self.node_review_graph, self.review_graphs, self.review_aggregator, fanout=self.fanout)
-        sampler = dgl_utils.HEAREdgeSampler(sampler, prefetch_labels=prefetch)
+        if self.objective == 'ranking':
+            neg_sampler = cornac.utils.dgl.UniformItemSampler(self.num_neg_samples, self.train_set.num_items)
+        else:
+            neg_sampler = None
+
+        sampler = dgl_utils.HEAREdgeSampler(sampler, prefetch_labels=prefetch, negative_sampler=neg_sampler)
         dataloader = dgl.dataloading.DataLoader(g, eids, sampler, batch_size=self.batch_size, shuffle=True,
                                                 drop_last=True, device=self.device, use_uva=self.use_uva,
                                                 num_workers=num_workers, use_prefetch_thread=thread)
 
         # Initialize training params.
         optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
-        length = len(dataloader)
+
+        if self.objective == 'ranking':
+            metrics = [cornac.metrics.NDCG()]
+        else:
+            metrics = [cornac.metrics.MSE()]
 
         best_state = None
-        best_score = float('inf')
+        best_score = 0 if metrics[0].higher_better else float('inf')
         best_epoch = 0
         epoch_length = len(dataloader)
         for e in range(self.num_epochs):
-            tot_mse = 0
-            # tot_l2 = 0
-            # tot_loss = 0
+            tot_losses = defaultdict(int)
+            cur_losses = {}
             self.model.train()
             with tqdm(dataloader, disable=not self.verbose) as progress:
-                for i, (input_nodes, edge_subgraph, blocks) in enumerate(progress, 1):
+                for i, batch in enumerate(progress, 1):
+                    if self.objective == 'ranking':
+                        input_nodes, edge_subgraph, neg_subgraph, blocks = batch
+                    else:
+                        input_nodes, edge_subgraph, blocks = batch
+
                     with torch.autocast(self.device):
                         x = self.model(blocks, self.model.node_embedding(input_nodes))
 
                     pred = self.model.graph_predict(edge_subgraph, x)
 
-                    mse_loss = self.model.loss(pred, edge_subgraph.edata['label'])
-                    # l2_loss = self.weight_decay * self.model.l2_loss(input_nodes)
-                    loss = mse_loss  # + l2_loss
+                    if self.objective == 'ranking':
+                        pred_j = self.model.graph_predict(neg_subgraph, x).reshape(-1, self.num_neg_samples)
+                        acc = (pred > pred_j).sum() / pred_j.shape.numel()
+                        loss = self.model.ranking_loss(pred, pred_j, self.neg_weight, self.margin)
+                        cur_losses['loss'] = loss.detach()
+                        cur_losses['acc'] = acc.detach()
+                    else:
+                        loss = self.model.rating_loss(pred, edge_subgraph.edata['label'])
+                        cur_losses['loss'] = loss.detach()
+
                     loss.backward()
 
-                    tot_mse += mse_loss.detach()
-                    # tot_l2 += l2_loss.detach()
-                    # tot_loss += loss.detach()
+                    for k, v in cur_losses.items():
+                        tot_losses[k] += v
 
                     if self.summary_writer is not None:
-                        self.summary_writer.add_scalar('train/mse', mse_loss, e*epoch_length+i)
+                        for k, v in cur_losses.items():
+                            self.summary_writer.add_scalar(f'train/cf/{k}', v, e * epoch_length + i)
 
                     optimizer.step()
                     optimizer.zero_grad()
-                    if i != length or val_set is None:
-                        progress.set_description(f'Epoch {e}, '
-                                                 f'MSE: {tot_mse / i:.5f}'
-                                                 # f', L2: {tot_l2 / i:.5f}'
-                                                 # f', Tot: {tot_loss / i:.5f}'
-                                                 )
+                    loss_str = ','.join([f'{k}: {v/i:.5f}' for k, v in tot_losses.items()])
+                    if i != epoch_length or val_set is None:
+                        progress.set_description(f'Epoch {e}, ' + loss_str)
                     else:
-                        mse, rmse = self._validate(val_set)
-                        progress.set_description(f'Epoch {e}, MSE: {tot_mse / i:.5f}, Val: MSE: {mse:.5f}, '
-                                                 f'RMSE: {rmse:.5f}')
+                        results = self._validate(val_set, metrics)
+                        res_str = 'Val: ' + ', '.join([f'{m.name}: {r:.3f}' for m, r in zip(metrics, results)])
+                        progress.set_description(f'Epoch {e}, ' + f'{loss_str}, ' + res_str)
 
                         if self.summary_writer is not None:
-                            self.summary_writer.add_scalar('val/mse', mse, e)
-                            self.summary_writer.add_scalar('val/rmse', rmse, e)
+                            for m, r in zip(metrics, results):
+                                self.summary_writer.add_scalar(f'val/{m.name}', r, e)
 
-                        if self.model_selection == 'best' and mse < best_score:
+                        if self.model_selection == 'best' and (results[0] > best_score if metrics[0].higher_better
+                                else results[0] < best_score):
                             best_state = deepcopy(self.model.state_dict())
-                            best_score = mse
+                            best_score = results[0]
                             best_epoch = e
 
             if self.early_stopping is not None and (e - best_epoch) >= self.early_stopping:
@@ -309,23 +338,25 @@ class HEAR(Recommender):
             self.model.load_state_dict(best_state)
 
         if val_set is not None and self.summary_writer is not None:
-            mse, rmse = self._validate(val_set)
-            self.summary_writer.add_hparams(self.parameters, {'mse': mse, 'rmse': rmse})
+            results = self._validate(val_set, metrics)
+            self.summary_writer.add_hparams(self.parameters, dict(zip([m.name for m in metrics], results)))
 
         self.model.eval()
         with torch.no_grad():
             self.model.inference(self.review_graphs, self.node_review_graph, self.device)
 
-    def _validate(self, val_set):
-        from ...eval_methods.base_method import rating_eval
-        from ...metrics import MSE, RMSE
+    def _validate(self, val_set, metrics):
+        from ...eval_methods.base_method import rating_eval, ranking_eval
         import torch
 
         self.model.eval()
         with torch.no_grad():
             self.model.inference(self.review_graphs, self.node_review_graph, self.device)
-            ((mse, rmse), _) = rating_eval(self, [MSE(), RMSE()], val_set, user_based=self.user_based)
-        return mse, rmse
+            if self.objective == 'ranking':
+                (result, _) = ranking_eval(self, metrics, self.train_set, val_set)
+            else:
+                (result, _) = rating_eval(self, metrics, val_set, user_based=self.user_based)
+        return result
 
     def score(self, user_idx, item_idx=None):
         import torch
@@ -333,8 +364,14 @@ class HEAR(Recommender):
         self.model.eval()
         with torch.no_grad():
             user_idx = torch.tensor(user_idx + self.n_items, dtype=torch.int64).to(self.device)
-            item_idx = torch.tensor(item_idx, dtype=torch.int64).to(self.device)
-            return self.model.predict(user_idx, item_idx).cpu()
+            if item_idx is None:
+                item_idx = torch.arange(self.n_items, dtype=torch.int64).to(self.device)
+                pred = self.model.predict(user_idx, item_idx).reshape(-1).cpu().numpy()
+            else:
+                item_idx = torch.tensor(item_idx, dtype=torch.int64).to(self.device)
+                pred = self.model.predict(user_idx, item_idx).cpu()
+
+            return pred
 
     def monitor_value(self):
         pass

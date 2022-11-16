@@ -221,7 +221,8 @@ class Model(nn.Module):
             self.node_preference = nn.Embedding(n_nodes, final_dim)
             self.w_1 = nn.Linear(final_dim, 1, bias=False)
 
-        self.loss_fn = nn.MSELoss(reduction='mean')
+        self.rating_loss_fn = nn.MSELoss(reduction='mean')
+        self.ranking_loss_fn = nn.ReLU()
         self.review_embs = None
         self.inf_emb = None
 
@@ -279,7 +280,7 @@ class Model(nn.Module):
         return x
 
     def _predict_dot(self, u_emb, i_emb):
-        return u_emb.dot(i_emb)
+        return (u_emb * i_emb).sum(-1)
 
     def _predict_narre(self, user, item, u_emb, i_emb):
         h = (u_emb + self.node_preference(user)) * (i_emb + self.node_preference(item))
@@ -297,8 +298,21 @@ class Model(nn.Module):
 
         return pred
 
-    def loss(self, preds, target):
-        return self.loss_fn(preds, target.unsqueeze(-1))
+    def rating_loss(self, preds, target):
+        return self.rating_loss_fn(preds, target.unsqueeze(-1))
+
+    def ranking_loss(self, preds_i, preds_j, w, m):
+        # (1 - i) + w * 1/|N| * sum(max(0, j - m) for j in N
+        # EQ. 1 in SimpleX, but based on code in:
+        # https://github.com/xue-pai/MatchBox/blob/master/deem/pytorch/losses/cosine_contrastive_loss.py
+        pos_loss = self.ranking_loss_fn(1 - preds_i)
+        bpr = - torch.log2(torch.sigmoid(preds_i - preds_j)).mean(-1, keepdims=True)
+        neg_loss = self.ranking_loss_fn(preds_j - m)
+        neg_loss = neg_loss.mean(dim=-1, keepdims=True)
+        if w is not None:
+            neg_loss *= w
+        loss = pos_loss + neg_loss #+ bpr
+        return loss.mean()
 
     def l2_loss(self, nodes):
         nodes = torch.unique(nodes)

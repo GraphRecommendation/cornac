@@ -217,7 +217,7 @@ class HAGERec(Recommender):
             metrics = [cornac.metrics.MSE()]
 
         best_state = None
-        best_score = float('inf')
+        best_score = 0 if metrics[0].higher_better else float('inf')
         best_epoch = -1
         for e in range(self.num_epochs):
             tot_losses = defaultdict(int)
@@ -281,7 +281,7 @@ class HAGERec(Recommender):
                                     self.summary_writer.add_scalar(f'val/{m.name}', r, e)
 
                             if self.model_selection == 'best' and (results[0] > best_score if metrics[0].higher_better
-                            else results[0] < best_score):
+                                    else results[0] < best_score):
                                 best_state = deepcopy(self.model.state_dict())
                                 best_score = results[0]
                                 best_epoch = e
