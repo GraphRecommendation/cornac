@@ -220,6 +220,7 @@ class Model(nn.Module):
         if predictor == 'narre':
             self.node_preference = nn.Embedding(n_nodes, final_dim)
             self.w_1 = nn.Linear(final_dim, 1, bias=False)
+            self.bias = nn.Parameter(torch.FloatTensor(n_nodes))
 
         self.rating_loss_fn = nn.MSELoss(reduction='mean')
         self.ccl_loss_fn = nn.ReLU()
@@ -256,9 +257,11 @@ class Model(nn.Module):
     def _graph_predict_narre(self, g: dgl.DGLGraph, x):
         with g.local_scope():
             g.ndata['h'] = x + self.node_dropout(self.node_preference(g.ndata[dgl.NID]))
+            g.ndata['b'] = self.bias[g.ndata[dgl.NID]]
             g.apply_edges(dgl.function.u_mul_v('h', 'h', 'm'))
+            g.apply_edges(dgl.function.u_add_v('b', 'b', 'b'))
 
-            return self.w_1(g.edata['m'])
+            return self.w_1(g.edata['m']) + g.edata['b']
 
     def graph_predict(self, g: dgl.DGLGraph, x):
         if self.predictor == 'dot':
