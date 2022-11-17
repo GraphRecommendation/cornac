@@ -102,10 +102,14 @@ class HAGERec(Recommender):
                                                                 f'not {objective}.'
 
     def _assign_attention(self, g, attention):
+        import dgl
+
         for etype, a in attention.items():
+            # Update values and recalculate attention
             device = self.train_graph.edges[etype].data['a'].device
             for iden, val in a.items():
                 g.edges[etype].data[iden] = val.to(device)
+            g.edges[etype].data['a'] = dgl.ops.edge_softmax(g[etype], g.edges[etype].data['ra'])
 
     def fit(self, train_set: Dataset, val_set=None):
         from .hagerec import Model
@@ -192,8 +196,7 @@ class HAGERec(Recommender):
 
         # Create sampler
         reverse_etypes = {'n_i': 'n_u', 'n_u': 'n_i'}
-        sampler = dgl_utils.HAGERecBlockSampler([10] * self.n_layers, self.n_users, self.n_items,
-                                                prob='a')
+        sampler = dgl_utils.HAGERecBlockSampler([10] * self.n_layers, self.n_users, self.n_items)
         if self.objective == 'ranking':
             neg_sampler = cornac.utils.dgl.UniformItemSampler(1, self.train_set.num_items)
         else:
@@ -235,10 +238,10 @@ class HAGERec(Recommender):
                     x, attentions = self.model(blocks, emb)
 
                     # Update attention. Uses 'raw attention' (non-normalized) to compute actual attention
-                    for etype, a in attentions.items():
-                        g.edges[etype].data['ra'][blocks[0].edges[etype].data[dgl.EID]] \
-                            = a.sum(1).squeeze().detach().to(g.edges[etype].data['ra'].device)
-                        g.edges[etype].data['a'] = dgl.ops.edge_softmax(g[etype], g.edges[etype].data['ra'])
+                    # for etype, a in attentions.items():
+                    #     g.edges[etype].data['ra'][blocks[0].edges[etype].data[dgl.EID]] \
+                    #         = a.sum(1).squeeze().detach().to(g.edges[etype].data['ra'].device)
+                    #     g.edges[etype].data['a'] = dgl.ops.edge_softmax(g[etype], g.edges[etype].data['ra'])
 
                     pred = self.model.graph_predict(edge_subgraph['n_i'], x)
 

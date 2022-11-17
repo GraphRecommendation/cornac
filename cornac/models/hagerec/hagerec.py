@@ -50,9 +50,7 @@ class HAGERecConv(nn.Module):
         def func(edges):
             # eq. 7
             env = edges.src[lhs_field]
-            shape = env.shape
-            env = torch.repeat_interleave(env, self._num_heads, dim=0)
-            env = env.reshape(shape[0], self._num_heads, -1)
+            env = env.reshape(env.shape[0], 1, -1)
 
             rr2 = edges.data[edge]
             a = edges.data[att]
@@ -85,10 +83,13 @@ class HAGERecConv(nn.Module):
             h_src, h_dst = dgl.utils.expand_as_pair(feat, g)
             h_src, h_dst = self.feat_drop(h_src), self.feat_drop(h_dst)
 
+            # Eq 8
             g.edata.update(self.calculate_attention(g, h_src, h_dst, 'ra', 'a'))
 
             g.srcdata.update({'en': h_src})
             g.edata.update({'rr': r_feat})  # relation
+
+            # eq 7.
             g.update_all(self._entity_propagation('en', 'a', 'rr', 'm'),
                          dgl.function.sum('m', 'g'))
 
@@ -138,11 +139,16 @@ class Model(nn.Module):
         self.relation_embedding = nn.Embedding(n_relations, embed_dim)
 
         self.mlps = nn.ModuleList()
+        self.r_mlps = nn.ModuleList()
         self.hagerec_convs = nn.ModuleList()
 
         in_dim = embed_dim
         for out_dim in layer_dims:
             self.mlps.append(nn.Sequential(
+                nn.Linear(in_dim, out_dim),
+                nn.LeakyReLU()
+            ))
+            self.r_mlps.append(nn.Sequential(
                 nn.Linear(in_dim, out_dim),
                 nn.LeakyReLU()
             ))
@@ -192,14 +198,14 @@ class Model(nn.Module):
         src_inputs = x
         dst_inputs = {k: v[:g.number_of_dst_nodes(k)] for k, v in x.items()}
         for stype, etype, dtype in g.canonical_etypes:
-                rel_graph = g[stype, etype, dtype]
-                if stype not in src_inputs or dtype not in dst_inputs or not rel_graph.num_edges():
-                    continue
-                if attention:
-                    h[dtype], a[etype] = \
-                        modules[etype](rel_graph, (src_inputs[stype], dst_inputs[dtype]), rel_x[etype], attention)
-                else:
-                    h[dtype] = modules[etype](rel_graph, (src_inputs[stype], dst_inputs[dtype]), rel_x[etype])
+            rel_graph = g[stype, etype, dtype]
+            if stype not in src_inputs or dtype not in dst_inputs or not rel_graph.num_edges():
+                continue
+            if attention:
+                h[dtype], a[etype] = \
+                    modules[etype](rel_graph, (src_inputs[stype], dst_inputs[dtype]), rel_x[etype], attention)
+            else:
+                h[dtype] = modules[etype](rel_graph, (src_inputs[stype], dst_inputs[dtype]), rel_x[etype])
 
         if attention:
             return h, a
@@ -210,7 +216,13 @@ class Model(nn.Module):
         rel_weight = self.relation_embedding.weight
         blocks = [blocks[i:i+2] for i in range(0, len(blocks), 2)]
         a = None
-        for i, (mlp, gcn, (block, agg_block)) in enumerate(zip(self.mlps, self.hagerec_convs, blocks)):
+        for i, (mlp, r_mlp, gcn, (block, agg_block)) in enumerate(zip(self.mlps, self.r_mlps,
+                                                                      self.hagerec_convs, blocks)):
+            # Assumption: W.r.t. the 'flatten', embed and mlp mentioned page 5 after eq 7, we assume the 'flatten' is
+            # batched building of the graph as in GraphSAGE; the embed is a simple lookup; and the mlp is applied
+            # between each layer to convert non-user(item) nodes and relations into the correct space for the next
+            # layer.
+            # The next code line applies to mlp to all nodes and later to the relation weights.
             h = {ntype: mlp(x[ntype][:block.num_dst_nodes(ntype)]) for ntype in block.ntypes}
             if i != 0:
                 h.update(self._hetero_aggregator(
@@ -220,7 +232,11 @@ class Model(nn.Module):
                     gcn, block, x, {etype: rel_weight[block.edges[etype].data['type']] for etype in block.etypes}, True
                 )
                 h.update(o)
-            rel_weight = mlp(rel_weight)
+
+            # update relation weight
+            rel_weight = r_mlp(rel_weight)
+
+            # Rearrange h based on aggregator block.
             x = self._block_aggregator(agg_block, h)
 
         return x, a
@@ -260,7 +276,7 @@ class Model(nn.Module):
         return self.rating_loss_fn(pred, target.unsqueeze(-1))
 
     def ranking_loss(self, pred_i, pred_j):
-        # -ln sig(-x) is equivalent to softplus(x)
+        # -ln sig(-x) is equivalent to softplus(x). Original -ln sig(i-j) = - ln sig(- (- (i-j))) = softplus(-(i-j)).
         return self.ranking_loss_fn(- (pred_i - pred_j)).mean()
 
     def inference(self, g, fanout, device, batch_size):
@@ -278,14 +294,14 @@ class Model(nn.Module):
         nodes = {ntype: g.nodes(ntype) for ntype in ['user', 'item']}
         nodes['user'] = nodes['user'][nodes['user'] > max(nodes['item'])]
 
-        g = dgl.sampling.select_topk(g, fanout, 'a')
+        # g = dgl.sampling.select_topk(g, fanout, 'a')
         sampler = dgl.dataloading.MultiLayerFullNeighborSampler(1)
         dataloader = dgl.dataloading.DataLoader(g, nodes, sampler,
                                                 batch_size=batch_size, shuffle=False, drop_last=True, device=device)
 
         agg_feats = []
         rel_weight = self.relation_embedding.weight
-        for mlp, gcn in zip(self.mlps, self.hagerec_convs):
+        for mlp, r_mlp, gcn in zip(self.mlps, self.r_mlps, self.hagerec_convs):
             next_emb = {ntype: mlp(emb[ntype]) for ntype in g.ntypes}
             for input_nodes, output_nodes, (block,) in dataloader:
                 rel_emb = {etype: rel_weight[block.edges[etype].data['type']] for etype in block.etypes}
@@ -293,7 +309,7 @@ class Model(nn.Module):
                 for ntype, ne in self._hetero_aggregator(gcn, block, in_emb, rel_emb).items():
                     next_emb[ntype][output_nodes[ntype]] = ne
 
-            rel_weight = mlp(rel_weight)
+            rel_weight = r_mlp(rel_weight)
             agg_feats.append(next_emb)
             emb = next_emb
 
