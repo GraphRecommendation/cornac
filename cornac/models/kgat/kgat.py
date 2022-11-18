@@ -80,7 +80,8 @@ class Model(nn.Module):
         self.layers = layers
 
         self._trans_r_loss_fn = torch.nn.Softplus()  # Softplus faster than logsigmoid
-        self._loss_fn = torch.nn.MSELoss()
+        self._rating_loss_fn = torch.nn.MSELoss()
+        self._ranking_loss_fn = torch.nn.Softplus()
 
         # sampler = dgl.dataloading.neighbor.MultiLayerFullNeighborSampler(3)
         # self.collator = dgl.dataloading.NodeCollator(graph, graph.nodes(), sampler)
@@ -193,8 +194,11 @@ class Model(nn.Module):
 
             return (embeddings[users] * embeddings[items]).sum(dim=1)
 
-    def loss(self, preds, target):
-        return self._loss_fn(preds, target)
+    def rating_loss(self, preds, target):
+        return self._rating_loss_fn(preds, target)
+
+    def ranking_loss(self, preds_i, preds_j):
+        return self._ranking_loss_fn(- (preds_i - preds_j)).mean()
 
     def inference(self, g, x, device):
         blocks = [dgl.to_block(g) for _ in self.layers]  # full graph propagations
@@ -205,5 +209,5 @@ class Model(nn.Module):
 
     def predict(self, user, item):
         u_emb, i_emb = self.embeddings[user], self.embeddings[item]
-        return u_emb.dot(i_emb)
+        return (u_emb * i_emb).sum(-1)
 

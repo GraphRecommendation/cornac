@@ -1,4 +1,5 @@
 import os
+from collections import defaultdict
 from copy import deepcopy
 from tqdm import tqdm
 
@@ -18,6 +19,7 @@ class KGAT(Recommender):
                  relation_dim=64,
                  layer_dims=None,
                  model_selection='best',
+                 objective='ranking',
                  early_stopping=None,
                  tr_feat_dropout=.0,
                  layer_dropouts=.1,
@@ -54,6 +56,7 @@ class KGAT(Recommender):
         self.layer_dims = layer_dims
         self.n_layers = len(layer_dims)
         self.model_selection = model_selection
+        self.objective = objective
         self.early_stopping = early_stopping
         self.tr_feat_dropout = tr_feat_dropout
         self.layer_dropouts = layer_dropouts
@@ -127,6 +130,7 @@ class KGAT(Recommender):
         import torch
         from torch import optim
         from . import dgl_utils
+        import cornac
 
         # Edges where label is non-zero and user and item occurs more than once.
         g = self.train_graph
@@ -170,7 +174,11 @@ class KGAT(Recommender):
 
         # CF sampler
         sampler = dgl.dataloading.MultiLayerFullNeighborSampler(self.n_layers)
-        sampler = dgl.dataloading.as_edge_prediction_sampler(sampler, exclude='reverse_id', reverse_eids=reverse_eids)
+        if self.objective == 'ranking':
+            neg_sampler = cornac.utils.dgl.UniformItemSampler(1, self.train_set.num_items)
+        else:
+            neg_sampler = None
+        sampler = dgl.dataloading.as_edge_prediction_sampler(sampler, exclude='reverse_id', reverse_eids=reverse_eids,  negative_sampler=neg_sampler)
         cf_dataloader = dgl.dataloading.DataLoader(g, cf_eids, sampler, batch_size=self.batch_size, shuffle=True,
                                                 drop_last=True, device=self.device, use_uva=self.use_uva,
                                                 num_workers=num_workers, use_prefetch_thread=thread)
@@ -180,48 +188,63 @@ class KGAT(Recommender):
         tr_optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
         cf_optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
+        if self.objective == 'ranking':
+            metrics = [cornac.metrics.NDCG()]
+        else:
+            metrics = [cornac.metrics.MSE()]
+
         best_state = None
-        best_score = float('inf')
+        best_score = 0 if metrics[0].higher_better else float('inf')
         best_epoch = -1
         for e in range(self.num_epochs):
-            tot_mse = 0
-            tot_l2 = 0
-            tot_loss = 0
+            tot_losses = defaultdict(int)
+            cur_losses = {}
             self.model.train()
             # CF
             with tqdm(cf_dataloader, disable=not self.verbose) as progress:
-                for i, (input_nodes, edge_subgraph, blocks) in enumerate(progress, 1):
+                for i, batch in enumerate(progress, 1):
+                    if self.objective == 'ranking':
+                        input_nodes, edge_subgraph, neg_subgraph, blocks = batch
+                    else:
+                        input_nodes, edge_subgraph, blocks = batch
                     emb = self.model.node_embedding(input_nodes)
                     x = self.model(blocks, emb)
 
                     pred = self.model.graph_predict(edge_subgraph, x)
+                    if self.objective == 'ranking':
+                        pred_j = self.model.graph_predict(neg_subgraph, x)
+                        acc = (pred > pred_j).sum() / pred_j.shape.numel()
+                        loss = self.model.ranking_loss(pred, pred_j)
+                        l2_loss = self.model.l2_loss(edge_subgraph, emb, neg_graph=neg_subgraph)
+                        cur_losses['loss'] = loss.detach()
+                        cur_losses['acc'] = acc.detach()
+                    else:
+                        loss = self.model.rating_loss(pred, edge_subgraph.edata['label'])
+                        l2_loss = self.model.l2_loss(edge_subgraph, emb)
+                        cur_losses['loss'] = loss.detach()
 
-                    mse_loss = self.model.loss(pred, edge_subgraph.edata['label'])
-                    l2_loss = self.l2_weight * self.model.l2_loss(edge_subgraph, emb)
-                    loss = mse_loss + l2_loss
+                    l2_loss = self.l2_weight * l2_loss
+                    cur_losses['l2'] = l2_loss.detach()
+
+                    loss = loss + l2_loss
                     loss.backward()
 
-                    tot_mse += mse_loss.detach()
-                    tot_l2 += l2_loss.detach()
-                    tot_loss += loss.detach()
+                    for k, v in cur_losses.items():
+                        tot_losses[k] += v
 
                     cf_optimizer.step()
                     cf_optimizer.zero_grad()
 
-                    progress.set_description(f'Epoch {e}, '
-                                             f'MSE:{tot_mse / i:.5f}'
-                                             f',L2:{tot_l2 / i:.3g}'
-                                             f',Tot:{tot_loss / i:.5f}'
-                                             )
+                    loss_str = ','.join([f'{k}:{v/i:.3f}' for k, v in tot_losses.items()])
+                    progress.set_description(f'Epoch {e}, ' + loss_str)
 
                     if self.summary_writer is not None:
-                        self.summary_writer.add_scalar('train/cf/mse', mse_loss, e*cf_length+i)
-                        self.summary_writer.add_scalar('train/cf/l2', l2_loss, e*cf_length+i)
+                        for k, v in cur_losses.items():
+                            self.summary_writer.add_scalar(f'train/cf/{k}', v, e * cf_length + i)
 
             # TransR
-            tot_tr = 0
-            tot_l2 = 0
-            tot_loss = 0
+            tot_losses = defaultdict(int)
+            cur_losses = {}
             with tqdm(tr_dataloader, disable=not self.verbose) as progress:
                 for i, (input_nodes, pos_subgraph, neg_subgraph, blocks) in enumerate(progress, 1):
                     x = self.model.node_embedding(input_nodes)
@@ -234,37 +257,39 @@ class KGAT(Recommender):
                     loss = tr_loss + l2_loss
                     loss.backward()
 
+                    cur_losses['loss'] = tr_loss.detach()
+                    cur_losses['acc'] = ((pos_x < neg_x).sum() / neg_x.shape.numel()).detach()
+                    cur_losses['l2'] = l2_loss.detach()
+
                     tr_optimizer.step()
                     tr_optimizer.zero_grad()
 
-                    tot_tr += tr_loss.detach()
-                    tot_l2 += l2_loss.detach()
-                    tot_loss += loss.detach()
+                    for k, v in cur_losses.items():
+                        tot_losses[k] += v
 
                     if self.summary_writer is not None:
-                        self.summary_writer.add_scalar('train/transr/mse', mse_loss, e*transr_length+i)
-                        self.summary_writer.add_scalar('train/transr/l2', l2_loss, e*transr_length+i)
+                        for k, v in cur_losses.items():
+                            self.summary_writer.add_scalar(f'train/tr/{k}', v, e * transr_length + i)
 
+                    loss_str = ','.join([f'{k}:{v/i:.3f}' for k, v in tot_losses.items()])
                     if i != transr_length:
-                        progress.set_description(f'Epoch {e}, '
-                                                 f'TR:{tot_tr / i:.5f}'
-                                                 f',L2:{tot_l2 / i:.3g}'
-                                                 f',Tot:{tot_loss / i:.5f}')
-
+                        progress.set_description(f'Epoch {e}, ' + loss_str)
                     else:
                         self.set_attention(g, verbose=False)  # Always set attention after final batch.
                         if val_set is not None:
-                            mse, rmse = self._validate(val_set)
-                            progress.set_description(f'Epoch {e}, MSE: {tot_mse / i:.5f}, Val: MSE: {mse:.5f}, '
-                                                     f'RMSE: {rmse:.5f}')
+                            results = self._validate(val_set, metrics)
+
+                            res_str = 'Val: ' + ', '.join([f'{m.name}:{r:.4f}' for m, r in zip(metrics, results)])
+                            progress.set_description(f'Epoch {e}, ' + f'{loss_str}, ' + res_str)
 
                             if self.summary_writer is not None:
-                                self.summary_writer.add_scalar('val/mse', mse, e)
-                                self.summary_writer.add_scalar('val/rmse', rmse, e)
+                                for m, r in zip(metrics, results):
+                                    self.summary_writer.add_scalar(f'val/{m.name}', r, e)
 
-                            if self.model_selection == 'best' and mse < best_score:
+                            if self.model_selection == 'best' and (results[0] > best_score if metrics[0].higher_better
+                                    else results[0] < best_score):
                                 best_state = deepcopy(self.model.state_dict())
-                                best_score = mse
+                                best_score = results[0]
                                 best_epoch = e
 
             if self.early_stopping is not None and e - best_epoch >= self.early_stopping:
@@ -275,22 +300,24 @@ class KGAT(Recommender):
             self.set_attention(g, verbose=self.verbose)
 
         if val_set is not None and self.summary_writer is not None:
-            mse, rmse = self._validate(val_set)
-            self.summary_writer.add_hparams(self.parameters, {'mse': mse, 'rmse': rmse})
+            results = self._validate(val_set, metrics)
+            self.summary_writer.add_hparams(self.parameters, dict(zip([m.name for m in metrics], results)))
 
-        _ = self._validate(val_set)
+        _ = self._validate(val_set, metrics)
 
-    def _validate(self, val_set):
-        from ...eval_methods.base_method import rating_eval
-        from ...metrics import MSE, RMSE
+    def _validate(self, val_set, metrics):
+        from ...eval_methods.base_method import rating_eval, ranking_eval
         import torch
 
         self.model.eval()
         with torch.no_grad():
             x = self.model.node_embedding(self.train_graph.nodes().to(self.device))
             self.model.inference(self.train_graph, x, self.device)
-            ((mse, rmse), _) = rating_eval(self, [MSE(), RMSE()], val_set, user_based=self.user_based)
-        return mse, rmse
+            if self.objective == 'ranking':
+                (result, _) = ranking_eval(self, metrics, self.train_set, val_set)
+            else:
+                (result, _) = rating_eval(self, metrics, val_set, user_based=self.user_based)
+        return result
 
     def score(self, user_idx, item_idx=None):
         import torch
@@ -298,8 +325,14 @@ class KGAT(Recommender):
         self.model.eval()
         with torch.no_grad():
             user_idx = torch.tensor(user_idx + self.n_items, dtype=torch.int64).to(self.device)
-            item_idx = torch.tensor(item_idx, dtype=torch.int64).to(self.device)
-            return self.model.predict(user_idx, item_idx).cpu()
+            if item_idx is None:
+                item_idx = torch.arange(self.n_items, dtype=torch.int64).to(self.device)
+                pred = self.model.predict(user_idx, item_idx).reshape(-1).cpu().numpy()
+            else:
+                item_idx = torch.tensor(item_idx, dtype=torch.int64).to(self.device)
+                pred = self.model.predict(user_idx, item_idx).cpu()
+
+            return pred
 
     def monitor_value(self):
         pass
