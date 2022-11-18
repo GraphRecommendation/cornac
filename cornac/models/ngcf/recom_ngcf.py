@@ -2,6 +2,7 @@ import os
 from collections import defaultdict
 from copy import deepcopy
 
+import torch
 from tqdm import tqdm
 
 import cornac.metrics
@@ -17,7 +18,7 @@ class NGCF(Recommender):
                  learning_rate=0.1,
                  l2_weight=0,
                  node_dim=64,
-                 layer_dim=None,
+                 layer_dims=None,
                  lightgcn=False,
                  model_selection='best',
                  objective='ranking',
@@ -35,8 +36,8 @@ class NGCF(Recommender):
 
         super(NGCF, self).__init__(name)
         # Default values
-        if layer_dim is None:
-            layer_dim = [64, 32, 16]
+        if layer_dims is None:
+            layer_dims = [64, 32, 16]
 
         # CUDA
         self.use_cuda = use_cuda
@@ -50,14 +51,14 @@ class NGCF(Recommender):
         self.learning_rate = learning_rate
         self.l2_weight = l2_weight
         self.node_dim = node_dim
-        self.layer_dims = layer_dim
+        self.layer_dims = layer_dims
         self.lightgcn = lightgcn
         self.model_selection = model_selection
         self.objective = objective
         self.early_stopping = early_stopping
         self.layer_dropout = layer_dropout
         parameter_list = ['batch_size', 'learning_rate', 'l2_weight', 'node_dim', 'layer_dims',
-                          'layer_dropout', 'model_selection', 'edge_dropout']
+                          'layer_dropout', 'model_selection']
         self.parameters = {}
         for k in parameter_list:
             attr = self.__getattribute__(k)
@@ -86,6 +87,48 @@ class NGCF(Recommender):
         assert use_uva == use_cuda or not use_uva, 'use_cuda must be true when using uva.'
         assert objective == 'ranking' or objective == 'rating', f'This method only supports ranking or rating, ' \
 
+    def _construct_graph(self, self_loop, norm='both'):
+        import dgl
+        user_ntype = 'user'
+        item_ntype = 'item'
+
+        # Get user-item edges while changing user indices.
+        users = torch.arange(self.train_set.matrix.shape[0], dtype=torch.int64)
+        items = torch.arange(self.train_set.matrix.shape[1], dtype=torch.int64)
+        u, i = self.train_set.matrix.nonzero()
+        ui = u, i
+        iu = i, u
+
+        if not self_loop:
+            graph_data = {
+                (user_ntype, 'ui', item_ntype): ui,
+                (item_ntype, 'iu', user_ntype): iu
+            }
+        else:
+            graph_data = {
+                (user_ntype, 'ui', item_ntype): ui,
+                (item_ntype, 'iu', user_ntype): iu,
+                (user_ntype, 'self_user', user_ntype): (users, users),
+                (item_ntype, 'self_item', item_ntype): (items, items)
+            }
+
+        new_g = dgl.heterograph(graph_data, num_nodes_dict={'user': len(users), 'item': len(items)})
+        new_g.nodes['user'].data['recommendable'] = torch.zeros(new_g.num_nodes('user'), dtype=torch.bool)
+        new_g.nodes['item'].data['recommendable'] = torch.ones(new_g.num_nodes('item'), dtype=torch.bool)
+
+        if norm == 'both':
+            for etype in new_g.etypes:
+                # get degrees
+                src, dst = new_g.edges(etype=etype)
+                dst_degree = new_g.in_degrees(dst, etype=etype).float()  # obtain degrees
+                src_degree = new_g.out_degrees(src, etype=etype).float()
+
+                # calculate norm in eq. 3 of both ngcf and lgcn papers.
+                norm = torch.pow(src_degree * dst_degree, -0.5).unsqueeze(1)  # compute norm
+                new_g.edges[etype].data['norm'] = norm
+
+        return new_g
+
     def fit(self, train_set: Dataset, val_set=None):
         from .ngcf import Model
         import torch, dgl
@@ -94,12 +137,10 @@ class NGCF(Recommender):
         u, v = train_set.matrix.nonzero()
         u, v = torch.LongTensor(u), torch.LongTensor(v)
 
-        data = {('user', 'ui', 'item'): (u, v), ('item', 'iu', 'user'): (v, u)}
-        g = dgl.heterograph(data)
-        self.train_graph = g
+        self.train_graph = self._construct_graph(not self.lightgcn)
 
         # create model
-        self.model = Model(g, self.node_dim, self.layer_dims, self.layer_dropout,
+        self.model = Model(self.train_graph, self.node_dim, self.layer_dims, self.layer_dropout,
                            self.lightgcn, self.use_cuda)
         self.model.reset_parameters()
 
@@ -124,7 +165,7 @@ class NGCF(Recommender):
 
         # Edges where label is non-zero and user and item occurs more than once.
         g = self.train_graph
-        cf_eids = {'ui': g['ui'].edges()}
+        cf_eids = {'ui': g['ui'].edges(form='eid')}
         num_workers = self.num_workers
 
         if self.use_uva:
@@ -139,7 +180,7 @@ class NGCF(Recommender):
             thread = None
 
         # Create sampler
-        reverse_etypes = {'n_i': 'n_u', 'n_u': 'n_i'}
+        reverse_etypes = {'ui': 'iu', 'iu': 'ui'}
         sampler = dgl.dataloading.MultiLayerFullNeighborSampler(len(self.layer_dims))
         if self.objective == 'ranking':
             neg_sampler = cornac.utils.dgl.UniformItemSampler(1, self.train_set.num_items)
@@ -178,8 +219,7 @@ class NGCF(Recommender):
                     else:
                         input_nodes, edge_subgraph, blocks = batch
 
-                    emb = {ntype: self.model.node_embedding(input_nodes[ntype]) for ntype in input_nodes.keys()}
-                    x = self.model(blocks, emb)
+                    x = self.model(input_nodes, blocks)
 
                     pred = self.model.graph_predict(edge_subgraph, x)
 
@@ -187,8 +227,11 @@ class NGCF(Recommender):
                         pred_j = self.model.graph_predict(neg_subgraph, x)
                         acc = (pred > pred_j).sum() / pred_j.shape.numel()
                         loss = self.model.ranking_loss(pred, pred_j)
+                        l2 = self.l2_weight * self.model.l2_loss(edge_subgraph, neg_subgraph, x)
                         cur_losses['loss'] = loss.detach()
+                        cur_losses['l2'] = l2.detach()
                         cur_losses['acc'] = acc.detach()
+                        loss += l2
                     else:
                         loss = self.model.rating_loss(pred, edge_subgraph['n_i'].edata['label'])
                         cur_losses['loss'] = loss.detach()
@@ -205,7 +248,7 @@ class NGCF(Recommender):
                         for k, v in cur_losses.items():
                             self.summary_writer.add_scalar(f'train/cf/{k}', v, e * cf_length + i)
 
-                    loss_str = ','.join([f'{k}: {v/i:.5f}' for k, v in tot_losses.items()])
+                    loss_str = ','.join([f'{k}: {v/i:.3f}' for k, v in tot_losses.items()])
                     if i != cf_length:
                         progress.set_description(f'Epoch {e}, ' + loss_str)
                     else:

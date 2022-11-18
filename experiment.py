@@ -150,6 +150,30 @@ def run(in_kwargs, dataset, method, save_dir='.'):
             'use_bias': True
         }
         model = cornac.models.BPR
+    elif method in ['ngcf', 'lightgcn']:
+        default_kwargs = {
+            'use_cuda': True,
+            'use_uva': False,
+            'batch_size': 256,
+            'num_workers': 5,
+            'num_epochs': 10,
+            'learning_rate': 0.0001,
+            'l2_weight': 1e-5,
+            'node_dim': 64,
+            'layer_dims': [64, 32, 16],
+            'model_selection': 'best',
+            'layer_dropout': .1,
+            'user_based': user_based,
+            'debug': False,
+            'out_path': save_dir,
+            'verbose': True,
+            'lightgcn': True if method == 'lightgcn' else False,
+            'name': method
+        }
+        if method == 'lightgcn':
+            default_kwargs['layer_dims'] = [64, 64, 64]
+
+        model = cornac.models.NGCF
     else:
         raise NotImplementedError
 

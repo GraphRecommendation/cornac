@@ -102,7 +102,7 @@ class Model(nn.Module):
             else:
                 nn.init.xavier_normal_(parameter)
 
-    def block_embedder(self, node_ids, blocks):
+    def forward(self, node_ids, blocks):
         dst_nodes = {ntype: blocks[-1].dstnodes(ntype) for ntype in set(blocks[-1].ntypes)} # Get final nodes
         x = {ntype: self.features[ntype](nids) for ntype, nids in node_ids.items()} # get initial embeddings
         embeddings = {ntype: [embedding[dst_nodes[ntype]]] for ntype, embedding in x.items()}  # get first embeddings
