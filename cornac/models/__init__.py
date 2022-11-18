@@ -47,7 +47,7 @@ from .mf import MF
 from .mmmf import MMMF
 from .most_pop import MostPop
 from .mter import MTER
-from .narre import NARRE
+from .narre import NARRE, NARRE_BPR
 from .ncf import GMF
 from .ncf import MLP
 from .ncf import NeuMF

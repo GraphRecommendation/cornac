@@ -14,3 +14,4 @@
 # ============================================================================
 
 from .recom_narre import NARRE
+from .recom_narre_bpr import NARRE_BPR

@@ -120,6 +120,12 @@ def run(in_kwargs, dataset, method, save_dir='.'):
     elif method == 'most-pop':
         default_kwargs = {}
         model = cornac.models.MostPop
+    elif method == 'narre':
+        default_kwargs = {}
+        if in_kwargs.get('use_bpr', False):
+            model = cornac.models.NARRE
+        else:
+            model = cornac.models.NARRE_BPR
     else:
         raise NotImplementedError
     parameters = list(inspect.signature(model).parameters.keys())
