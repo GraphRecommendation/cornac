@@ -29,6 +29,7 @@ class HEAR(Recommender):
                  learned_embeddings=False,
                  learned_preference=False,
                  learned_node_embeddings=None,
+                 preference_module=None,
                  num_neg_samples=50,
                  margin=0.9,
                  neg_weight=500,
@@ -68,6 +69,7 @@ class HEAR(Recommender):
         self.learned_embeddings = learned_embeddings
         self.learned_preference = learned_preference
         self.learned_node_embeddings = learned_node_embeddings
+        self.preference_module = preference_module
         self.model_selection = model_selection
         self.objective = objective
         self.ranking_loss = ranking_loss
@@ -106,6 +108,11 @@ class HEAR(Recommender):
         assert objective == 'ranking' or objective == 'rating', f'This method only supports ranking or rating, ' \
                                                                 f'not {objective}.'
         assert ranking_loss == 'bpr' or ranking_loss == 'ccl', f'Only bpr and ccl are supported not {ranking_loss}.'
+        assert not (self.learned_preference or self.learned_embeddings) or self.learned_node_embeddings is not None, \
+            'If using learned preference or learned embeddings, then learned node embeddings must be passed as' \
+            'an argument.'
+        assert self.learned_preference != (self.preference_module is not None), \
+            'Cannot use both learned preference embeddings and use another preference module.'
 
     def _create_graphs(self, train_set: Dataset):
         import dgl
