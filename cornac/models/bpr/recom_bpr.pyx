@@ -113,7 +113,7 @@ class BPR(Recommender):
         use_bias=True,
         num_threads=0, 
         trainable=True, 
-        verbose=False, 
+        verbose=False,
         init_params=None, 
         seed=None
     ):

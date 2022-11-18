@@ -229,7 +229,7 @@ class NARRE_BPR(Recommender):
                 loop.set_postfix(loss=train_loss.result().numpy(), vl=val_loss, bvl=best_val_loss, be=self.best_epoch)
             self.losses["train_losses"].append(train_loss.result().numpy())
             self.losses["val_losses"].append(val_loss)
-            if self.early_stopping is not None and self.best_epoch - i_epoch >= self.early_stopping:
+            if self.early_stopping is not None and i_epoch-self.best_epoch >= self.early_stopping:
                 break
         loop.close()
 

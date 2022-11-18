@@ -128,19 +128,28 @@ def run(in_kwargs, dataset, method, save_dir='.'):
             'attention_size': 16,
             'kernel_sizes': [3],
             'n_filters': 64,
-            'dropout_rate': 0.5,
+            'dropout_rate': 0.1,
             'max_text_length': 50,
             'batch_size': 64,
             'max_iter': 500,
             'model_selection': 'best',
-
+            'learning_rate': 0.0001,
             'seed': 42,
-            'max_num_review': 10
+            'max_num_review': 50
         }
         if in_kwargs.get('use_bpr', False):
             model = cornac.models.NARRE_BPR
         else:
             model = cornac.models.NARRE
+    elif method == 'bpr':
+        default_kwargs = {
+            'k': 16,
+            'max_iter': 100,
+            'learning_rate': 0.001,
+            'lambda_reg': 0.01,
+            'use_bias': True
+        }
+        model = cornac.models.BPR
     else:
         raise NotImplementedError
 
