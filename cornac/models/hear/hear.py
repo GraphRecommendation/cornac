@@ -197,7 +197,8 @@ class HEARConv(nn.Module):
 
 class Model(nn.Module):
     def __init__(self, n_nodes, n_relations, aggregator, predictor, node_dim, review_dim, final_dim, num_heads,
-                 layer_dropout, attention_dropout, learned_preference=None):
+                 layer_dropout, attention_dropout, learned_node_embeddings=None, learned_preference=False,
+                 learned_embeddings=False):
         super().__init__()
 
         self.aggregator = aggregator
@@ -206,7 +207,16 @@ class Model(nn.Module):
         self.review_dim = review_dim
         self.final_dim = final_dim
         self.num_heads = num_heads
-        self.node_embedding = nn.Embedding(n_nodes, node_dim)
+        self.learned_node_embeddings = learned_node_embeddings
+
+        if not learned_embeddings:
+            self.node_embedding = nn.Embedding(n_nodes, node_dim)
+        else:
+            self.node_embedding_mlp = nn.Sequential(
+                    nn.Linear(self.learned_node_embeddings.shape[1], node_dim),
+                    nn.LeakyReLU()
+            )
+
         self.review_conv = HypergraphLayer(node_dim, review_dim)
         self.review_agg = HEARConv(aggregator, n_nodes, n_relations, review_dim, final_dim, num_heads,
                                    feat_drop=layer_dropout[1], attn_drop=attention_dropout)
@@ -217,15 +227,14 @@ class Model(nn.Module):
             self.w_0 = nn.Linear(review_dim, final_dim)
 
         if predictor == 'narre':
-            if learned_preference is None:
+            if not learned_preference:
                 self.node_preference = nn.Embedding(n_nodes, final_dim)
             else:
-                self.learned_preference = learned_preference
                 self.preference_mlp = nn.Sequential(
-                    nn.Linear(learned_preference.shape[1], final_dim),
+                    nn.Linear(self.learned_node_embeddings.shape[1], final_dim),
                     nn.LeakyReLU()
                 )
-                self.test_mlp = nn.Sequential(
+                self.review_mlp = nn.Sequential(
                     nn.Linear(final_dim, final_dim),
                     nn.LeakyReLU()
                 )
@@ -244,6 +253,12 @@ class Model(nn.Module):
                 nn.init.constant_(parameter, 0)
             else:
                 nn.init.xavier_normal_(parameter)
+
+    def get_initial_embedings(self, nodes):
+        if hasattr(self, 'node_embedding'):
+            return self.node_embedding(nodes)
+        else:
+            return self.node_embedding_mlp(self.learned_node_embeddings[nodes])
 
     def forward(self, blocks, x):
         x = self.node_dropout(x)
@@ -269,9 +284,9 @@ class Model(nn.Module):
             if hasattr(self, 'node_preference'):
                 np = self.node_preference(g.ndata[dgl.NID])
             else:
-                np = self.learned_preference[g.ndata[dgl.NID]]
+                np = self.learned_node_embeddings[g.ndata[dgl.NID]]
                 np = self.preference_mlp(np)
-                x = self.test_mlp(x)
+                x = self.review_mlp(x)
 
             g.ndata['h'] = x + self.node_dropout(np)
             g.ndata['b'] = self.bias[g.ndata[dgl.NID]]
@@ -308,10 +323,10 @@ class Model(nn.Module):
             np_u = self.node_preference(user)
             np_i = self.node_preference(item)
         else:
-            np_u = self.learned_preference[user]
-            np_i = self.learned_preference[item]
+            np_u = self.learned_node_embeddings[user]
+            np_i = self.learned_node_embeddings[item]
             np_u, np_i = self.preference_mlp(np_u), self.preference_mlp(np_i)
-            u_emb, i_emb = self.test_mlp(u_emb), self.test_mlp(i_emb)
+            u_emb, i_emb = self.review_mlp(u_emb), self.review_mlp(i_emb)
         h = (u_emb + np_u) * (i_emb + np_i)
         return self.w_1(h)
 
@@ -355,15 +370,6 @@ class Model(nn.Module):
 
         return loss.mean()
 
-    def l2_loss(self, nodes):
-        nodes = torch.unique(nodes)
-        loss = torch.pow(self.node_embedding(nodes), 2).sum()
-        # for parameter in self.parameters():
-        #     if isinstance(parameter, nn.Linear):
-        #         loss += torch.pow(parameter.weight, 2).sum()
-
-        return loss
-
     def inference(self, review_graphs, node_review_graph, device):
         self.review_embs = torch.zeros((max(review_graphs)+1, self.review_conv.out_dim)).to(device)
 
@@ -378,7 +384,8 @@ class Model(nn.Module):
         # Review inference
         for (input_nodes, batched_graph), indices in review_dataloader:
             input_nodes, batched_graph, indices = input_nodes.to(device), batched_graph.to(device), indices.to(device)
-            self.review_embs[indices] = self.review_representation(batched_graph, self.node_embedding(input_nodes))
+            self.review_embs[indices] = self.review_representation(batched_graph,
+                                                                   self.get_initial_embedings(input_nodes))
 
         # Node inference setup
         indices = {'node': node_review_graph.nodes('node')}

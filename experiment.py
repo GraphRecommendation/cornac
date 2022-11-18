@@ -61,12 +61,11 @@ def run(in_kwargs, dataset, method, save_dir='.'):
             in_kwargs['layer_dropout'] = in_kwargs['dropout']
             in_kwargs['attention_dropout'] = in_kwargs['dropout']
 
-        if (path := in_kwargs.get('preference_path')) is not None:
+        if (path := in_kwargs.get('embedding_path')) is not None:
             with open(path, 'rb') as f:
                 pm = pickle.load(f)
 
-            learned_preference = pm.model.embeddings
-            in_kwargs['learned_preference'] = learned_preference
+            in_kwargs['learned_node_embeddings'] = pm.model.embeddings
     elif method == 'kgat':
         default_kwargs = {
             'use_cuda': True,
