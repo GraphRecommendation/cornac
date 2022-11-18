@@ -2,6 +2,7 @@
 -f https://download.pytorch.org/whl/torch_stable.html
 -f https://data.dgl.ai/wheels/repo.html
 
+tensorflow==2.6.0
 protobuf==3.20
 pandas==1.5.1
 scipy==1.9.3

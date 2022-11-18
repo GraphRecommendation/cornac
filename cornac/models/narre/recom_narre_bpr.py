@@ -99,17 +99,18 @@ class NARRE_BPR(Recommender):
         n_filters=64,
         dropout_rate=0.5,
         max_text_length=50,
-        max_num_review=None,
+        max_num_review=10,
         batch_size=64,
         max_iter=10,
         optimizer='adam',
         learning_rate=0.001,
         model_selection='last', # last or best
+        early_stopping=None,
         user_based=True,
         trainable=True,
         verbose=True,
         init_params=None,
-        seed=None,
+        seed=42,
     ):
         super().__init__(name=name, trainable=trainable, verbose=verbose)
         self.seed = seed
@@ -127,6 +128,7 @@ class NARRE_BPR(Recommender):
         self.optimizer = optimizer
         self.learning_rate = learning_rate
         self.model_selection = model_selection
+        self.early_stopping = early_stopping
         self.user_based = user_based
         # Init params if provided
         self.init_params = {} if init_params is None else init_params
@@ -179,7 +181,7 @@ class NARRE_BPR(Recommender):
         from .narre import get_data
         from .narre_bpr import get_item_review_pairs
         from ...eval_methods.base_method import ranking_eval
-        from ...metrics import AUC
+        from ...metrics import AUC, NDCG
         if not hasattr(self, 'optimizer_'):
             if self.optimizer == 'rmsprop':
                 self.optimizer_ = keras.optimizers.RMSprop(learning_rate=self.learning_rate)
@@ -187,7 +189,7 @@ class NARRE_BPR(Recommender):
                 self.optimizer_ = keras.optimizers.Adam(learning_rate=self.learning_rate)
         train_loss = keras.metrics.Mean(name="loss")
         val_loss = 0.
-        best_val_loss = 1e9
+        best_val_loss = 0
         self.best_epoch = None
         loop = trange(self.max_iter, disable=not self.verbose, bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}')
         for i_epoch, _ in enumerate(loop):
@@ -209,24 +211,26 @@ class NARRE_BPR(Recommender):
                 self.optimizer_.apply_gradients(zip(gradients, self.model.graph.trainable_variables))
                 train_loss(loss)
                 if i % 10 == 0:
-                    loop.set_postfix(loss=train_loss.result().numpy(), val_loss=val_loss, best_val_loss=best_val_loss, best_epoch=self.best_epoch)
+                    loop.set_postfix(loss=train_loss.result().numpy(), vl=val_loss, bvl=best_val_loss, be=self.best_epoch)
             current_weights = self.model.get_weights(self.train_set, self.batch_size, max_num_review=self.max_num_review)
             if self.val_set is not None:
                 self.X, self.Y, self.W1, self.user_embedding, self.item_embedding, self.bu, self.bi, self.mu, self.A = current_weights
-                [current_val_auc], _ = ranking_eval(
+                [current_val_ndcg], _ = ranking_eval(
                     model=self,
-                    metrics=[AUC()],
+                    metrics=[NDCG()],
                     train_set=self.train_set,
                     test_set=self.val_set,
                 )
-                val_loss = current_val_auc
-                if best_val_loss > val_loss:
+                val_loss = current_val_ndcg
+                if best_val_loss < val_loss:
                     best_val_loss = val_loss
                     self.best_epoch = i_epoch + 1
                     best_weights = current_weights
-                loop.set_postfix(loss=train_loss.result().numpy(), val_loss=val_loss, best_val_loss=best_val_loss, best_epoch=self.best_epoch)
+                loop.set_postfix(loss=train_loss.result().numpy(), vl=val_loss, bvl=best_val_loss, be=self.best_epoch)
             self.losses["train_losses"].append(train_loss.result().numpy())
             self.losses["val_losses"].append(val_loss)
+            if self.early_stopping is not None and self.best_epoch - i_epoch >= self.early_stopping:
+                break
         loop.close()
 
         # save weights for predictions

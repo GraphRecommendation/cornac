@@ -121,13 +121,29 @@ def run(in_kwargs, dataset, method, save_dir='.'):
         default_kwargs = {}
         model = cornac.models.MostPop
     elif method == 'narre':
-        default_kwargs = {}
+        default_kwargs = {
+            'embedding_size': 100,
+            'id_embedding_size': 32,
+            'n_factors': 32,
+            'attention_size': 16,
+            'kernel_sizes': [3],
+            'n_filters': 64,
+            'dropout_rate': 0.5,
+            'max_text_length': 50,
+            'batch_size': 64,
+            'max_iter': 500,
+            'model_selection': 'best',
+
+            'seed': 42,
+            'max_num_review': 10
+        }
         if in_kwargs.get('use_bpr', False):
-            model = cornac.models.NARRE
-        else:
             model = cornac.models.NARRE_BPR
+        else:
+            model = cornac.models.NARRE
     else:
         raise NotImplementedError
+
     parameters = list(inspect.signature(model).parameters.keys())
     in_kwargs = {k: v for k, v in in_kwargs.items() if k in parameters}  # some python args are not relevant for model
     default_kwargs.update(in_kwargs)
