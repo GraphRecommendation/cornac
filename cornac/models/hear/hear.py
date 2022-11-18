@@ -196,8 +196,8 @@ class HEARConv(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, n_nodes, n_relations, aggregator, predictor, node_dim, review_dim, final_dim, num_heads, layer_dropout,
-                 attention_dropout):
+    def __init__(self, n_nodes, n_relations, aggregator, predictor, node_dim, review_dim, final_dim, num_heads,
+                 layer_dropout, attention_dropout, learned_preference=None):
         super().__init__()
 
         self.aggregator = aggregator
@@ -214,11 +214,21 @@ class Model(nn.Module):
         self.node_dropout = nn.Dropout(layer_dropout[0])
 
         if aggregator.startswith('narre'):
-            # self.node_quality = nn.Embedding(n_nodes, review_dim)
             self.w_0 = nn.Linear(review_dim, final_dim)
 
         if predictor == 'narre':
-            self.node_preference = nn.Embedding(n_nodes, final_dim)
+            if learned_preference is None:
+                self.node_preference = nn.Embedding(n_nodes, final_dim)
+            else:
+                self.learned_preference = learned_preference
+                self.preference_mlp = nn.Sequential(
+                    nn.Linear(learned_preference.shape[1], final_dim),
+                    nn.LeakyReLU()
+                )
+                self.test_mlp = nn.Sequential(
+                    nn.Linear(final_dim, final_dim),
+                    nn.LeakyReLU()
+                )
             self.w_1 = nn.Linear(final_dim, 1, bias=False)
             self.bias = nn.Parameter(torch.FloatTensor(n_nodes))
 
@@ -256,12 +266,19 @@ class Model(nn.Module):
 
     def _graph_predict_narre(self, g: dgl.DGLGraph, x):
         with g.local_scope():
-            g.ndata['h'] = x + self.node_dropout(self.node_preference(g.ndata[dgl.NID]))
+            if hasattr(self, 'node_preference'):
+                np = self.node_preference(g.ndata[dgl.NID])
+            else:
+                np = self.learned_preference[g.ndata[dgl.NID]]
+                np = self.preference_mlp(np)
+                x = self.test_mlp(x)
+
+            g.ndata['h'] = x + self.node_dropout(np)
             g.ndata['b'] = self.bias[g.ndata[dgl.NID]]
             g.apply_edges(dgl.function.u_mul_v('h', 'h', 'm'))
             g.apply_edges(dgl.function.u_add_v('b', 'b', 'b'))
 
-            return self.w_1(g.edata['m']) + g.edata['b']
+            return self.w_1(g.edata['m']) + g.edata['b'].unsqueeze(-1)
 
     def graph_predict(self, g: dgl.DGLGraph, x):
         if self.predictor == 'dot':
@@ -287,7 +304,15 @@ class Model(nn.Module):
         return (u_emb * i_emb).sum(-1)
 
     def _predict_narre(self, user, item, u_emb, i_emb):
-        h = (u_emb + self.node_preference(user)) * (i_emb + self.node_preference(item))
+        if hasattr(self, 'node_preference'):
+            np_u = self.node_preference(user)
+            np_i = self.node_preference(item)
+        else:
+            np_u = self.learned_preference[user]
+            np_i = self.learned_preference[item]
+            np_u, np_i = self.preference_mlp(np_u), self.preference_mlp(np_i)
+            u_emb, i_emb = self.test_mlp(u_emb), self.test_mlp(i_emb)
+        h = (u_emb + np_u) * (i_emb + np_i)
         return self.w_1(h)
 
     def predict(self, user, item):

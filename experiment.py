@@ -14,6 +14,9 @@
 # ============================================================================
 import argparse
 import inspect
+import pickle
+
+import torch
 
 import cornac
 from cornac.datasets import amazon_digital_music, amazon_cellphone_seer, amazon_computer_seer
@@ -41,7 +44,7 @@ def run(in_kwargs, dataset, method, save_dir='.'):
             'review_dim': 32,
             'final_dim': 16,
             'num_heads': 3,
-            'fanout': 5,
+            'fanout': 10,
             'model_selection': 'best',
             'review_aggregator': 'narre',
             'predictor': 'narre',
@@ -57,6 +60,13 @@ def run(in_kwargs, dataset, method, save_dir='.'):
         if 'dropout' in in_kwargs:
             in_kwargs['layer_dropout'] = in_kwargs['dropout']
             in_kwargs['attention_dropout'] = in_kwargs['dropout']
+
+        if (path := in_kwargs.get('preference_path')) is not None:
+            with open(path, 'rb') as f:
+                pm = pickle.load(f)
+
+            learned_preference = pm.model.embeddings
+            in_kwargs['learned_preference'] = learned_preference
     elif method == 'kgat':
         default_kwargs = {
             'use_cuda': True,
@@ -146,6 +156,7 @@ def run(in_kwargs, dataset, method, save_dir='.'):
         test_size=0.2,
         val_size=0.16,
         exclude_unknowns=True,
+        seed=42,
         verbose=default_kwargs.get('verbose', True),
     )
 

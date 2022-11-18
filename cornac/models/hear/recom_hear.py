@@ -26,6 +26,7 @@ class HEAR(Recommender):
                  ranking_loss='bpr',
                  review_aggregator='narre',
                  predictor='gatv2',
+                 learned_preference=None,
                  num_neg_samples=50,
                  margin=0.9,
                  neg_weight=500,
@@ -62,6 +63,7 @@ class HEAR(Recommender):
         self.final_dim = final_dim
         self.num_heads = num_heads
         self.fanout = fanout
+        self.learned_preference = learned_preference
         self.model_selection = model_selection
         self.objective = objective
         self.ranking_loss = ranking_loss
@@ -205,7 +207,7 @@ class HEAR(Recommender):
         # create model
         self.model = Model(n_nodes, n_r_types, self.review_aggregator, self.predictor, self.node_dim,
                            self.review_dim, self.final_dim, self.num_heads, [self.layer_dropout]*2,
-                           self.attention_dropout)
+                           self.attention_dropout, learned_preference=self.learned_preference)
 
         self.model.reset_parameters()
 
@@ -290,8 +292,8 @@ class HEAR(Recommender):
                     else:
                         input_nodes, edge_subgraph, blocks = batch
 
-                    with torch.autocast(self.device):
-                        x = self.model(blocks, self.model.node_embedding(input_nodes))
+                    # with torch.autocast(self.device):
+                    x = self.model(blocks, self.model.node_embedding(input_nodes))
 
                     pred = self.model.graph_predict(edge_subgraph, x)
 
