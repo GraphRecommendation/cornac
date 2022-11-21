@@ -91,6 +91,7 @@ class HEAR(Recommender):
         self.train_graph = None
         self.model = None
         self.n_items = 0
+        self.plateaued = False
 
         # Misc
         self.user_based = user_based
@@ -286,12 +287,16 @@ class HEAR(Recommender):
         optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
 
         if self.objective == 'ranking':
-            metrics = [cornac.metrics.NDCG()]
+            metrics = [cornac.metrics.NDCG(), cornac.metrics.AUC()]
         else:
             metrics = [cornac.metrics.MSE()]
 
         best_state = None
         best_score = 0 if metrics[0].higher_better else float('inf')
+        patience = self.early_stopping // 3 if self.early_stopping is not None else 10
+        print(f'Setting patience to {patience}')
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max' if metrics[0].higher_better else 'min',
+                                           patience=patience)
         best_epoch = 0
         epoch_length = len(dataloader)
         for e in range(self.num_epochs):
@@ -311,7 +316,7 @@ class HEAR(Recommender):
                     pred = self.model.graph_predict(edge_subgraph, x)
 
                     if self.objective == 'ranking':
-                        pred_j = self.model.graph_predict(neg_subgraph, x).reshape(-1, self.num_neg_samples)
+                        pred_j = self.model.graph_predict(neg_subgraph, x, self.plateaued).reshape(-1, self.num_neg_samples)
                         acc = (pred > pred_j).sum() / pred_j.shape.numel()
                         loss = self.model.ranking_loss(pred, pred_j, self.ranking_loss, self.neg_weight, self.margin)
                         cur_losses['loss'] = loss.detach()
@@ -338,6 +343,9 @@ class HEAR(Recommender):
                         results = self._validate(val_set, metrics)
                         res_str = 'Val: ' + ', '.join([f'{m.name}:{r:.4f}' for m, r in zip(metrics, results)])
                         progress.set_description(f'Epoch {e}, ' + f'{loss_str}, ' + res_str)
+                        
+                        if scheduler is not None:
+                            scheduler.step(results[0])
 
                         if self.summary_writer is not None:
                             for m, r in zip(metrics, results):
@@ -350,7 +358,18 @@ class HEAR(Recommender):
                             best_epoch = e
 
             if self.early_stopping is not None and (e - best_epoch) >= self.early_stopping:
-                break
+                if self.plateaued:
+                    break
+                else:
+                    print(f'Plateaued, using adding learned preference.')
+                    self.plateaued = True
+                    best_epoch = e  # reset best state
+                    if self.model_selection == 'best':
+                        print('Using best state for fine tuning.')
+                        self.model.load_state_dict(best_state)
+                        optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
+                        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max' if metrics[0].higher_better else 'min',
+                                           patience=patience)
 
         if best_state is not None:
             self.model.load_state_dict(best_state)
@@ -384,10 +403,10 @@ class HEAR(Recommender):
             user_idx = torch.tensor(user_idx + self.n_items, dtype=torch.int64).to(self.device)
             if item_idx is None:
                 item_idx = torch.arange(self.n_items, dtype=torch.int64).to(self.device)
-                pred = self.model.predict(user_idx, item_idx).reshape(-1).cpu().numpy()
+                pred = self.model.predict(user_idx, item_idx, self.plateaued).reshape(-1).cpu().numpy()
             else:
                 item_idx = torch.tensor(item_idx, dtype=torch.int64).to(self.device)
-                pred = self.model.predict(user_idx, item_idx).cpu()
+                pred = self.model.predict(user_idx, item_idx, self.plateaued).cpu()
 
             return pred
 

@@ -19,8 +19,8 @@ import pickle
 import torch
 
 import cornac
-from cornac.datasets import amazon_digital_music, amazon_cellphone_seer, amazon_computer_seer
-from cornac.eval_methods import RatioSplit, StratifiedSplit
+from cornac.datasets import amazon_cellphone_seer, amazon_computer_seer
+from cornac.eval_methods import StratifiedSplit
 from cornac.data import ReviewModality, SentimentModality, Reader
 from cornac.data.text import BaseTokenizer
 
@@ -65,7 +65,11 @@ def run(in_kwargs, dataset, method, save_dir='.'):
             with open(path, 'rb') as f:
                 pm = pickle.load(f)
 
-            in_kwargs['learned_node_embeddings'] = pm.model.embeddings
+            em = pm.model.embeddings
+            if isinstance(em, dict):
+                em = torch.cat([em[k] for k in ['item', 'user', 'node'] if k in em])
+
+            in_kwargs['learned_node_embeddings'] = em
     elif method == 'kgat':
         default_kwargs = {
             'use_cuda': True,

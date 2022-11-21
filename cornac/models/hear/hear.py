@@ -295,11 +295,27 @@ class Model(nn.Module):
 
             return self.w_1(g.edata['m']) + g.edata['b'].unsqueeze(-1)
 
-    def graph_predict(self, g: dgl.DGLGraph, x):
+    def _graph_predict_narre2(self, g: dgl.DGLGraph, x, use_preference):
+        with g.local_scope():
+            if hasattr(self, 'node_preference'):
+                np = self.node_preference(g.ndata[dgl.NID])
+            else:
+                np = self.learned_node_embeddings[g.ndata[dgl.NID]]
+            if use_preference:
+                g.ndata['h'] = torch.cat([x, np], dim=-1)
+            else:
+                g.ndata['h'] = x
+            g.ndata['b'] = self.bias[g.ndata[dgl.NID]]
+            g.apply_edges(dgl.function.u_dot_v('h', 'h', 'm'))
+            g.apply_edges(dgl.function.u_add_v('b', 'b', 'b'))
+
+            return g.edata['m'] #+ g.edata['b'].unsqueeze(-1)
+
+    def graph_predict(self, g: dgl.DGLGraph, x, use_preference=False):
         if self.predictor == 'dot':
             return self._graph_predict_dot(g, x)
         elif self.predictor == 'narre':
-            return self._graph_predict_narre(g, x)
+            return self._graph_predict_narre2(g, x, use_preference)
         else:
             raise ValueError(f'Predictor not implemented for "{self.predictor}".')
 
@@ -328,15 +344,34 @@ class Model(nn.Module):
             np_u, np_i = self.preference_mlp(np_u), self.preference_mlp(np_i)
             u_emb, i_emb = self.review_mlp(u_emb), self.review_mlp(i_emb)
         h = (u_emb + np_u) * (i_emb + np_i)
-        return self.w_1(h)
+        return self.w_1(h) + (self.bias[user] + self.bias[item]).unsqueeze(-1)
 
-    def predict(self, user, item):
+    def _predict_narre2(self, user, item, u_emb, i_emb, use_preference=False):
+        if hasattr(self, 'node_preference'):
+            np_u = self.node_preference(user)
+            np_i = self.node_preference(item)
+        else:
+            np_u = self.learned_node_embeddings[user]
+            np_i = self.learned_node_embeddings[item]
+
+        if use_preference:
+            u = torch.cat([u_emb, np_u], dim=-1)
+            i = torch.cat([i_emb, np_i], dim=-1)
+        else:
+            u = u_emb
+            i = i_emb
+
+        h = (u * i).sum(-1)
+        return h.reshape(-1, 1) #+ (self.bias[user] + self.bias[item]).reshape(-1, 1)
+
+    def predict(self, user, item, use_preference=False):
         u_emb, i_emb = self.inf_emb[user], self.inf_emb[item]
+        # u_emb, i_emb = self.learned_node_embeddings[user], self.learned_node_embeddings[item]
 
         if self.predictor == 'dot':
             pred = self._predict_dot(u_emb, i_emb)
         elif self.predictor == 'narre':
-            pred = self._predict_narre(user, item, u_emb, i_emb)
+            pred = self._predict_narre2(user, item, u_emb, i_emb, use_preference)
         else:
             raise ValueError(f'Predictor not implemented for "{self.predictor}".')
 
