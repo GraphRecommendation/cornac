@@ -178,6 +178,26 @@ def run(in_kwargs, dataset, method, save_dir='.'):
             default_kwargs['layer_dims'] = [64, 64, 64]
 
         model = cornac.models.NGCF
+    elif method == 'lightrla':
+        default_kwargs = {
+            'use_cuda': True,
+            'use_uva': False,
+            'batch_size': 256,
+            'num_workers': 5,
+            'num_epochs': 10,
+            'learning_rate': 0.0001,
+            'l2_weight': 1e-5,
+            'node_dim': 64,
+            'layer_dims': [64, 64, 64],
+            'model_selection': 'best',
+            'layer_dropout': .1,
+            'user_based': user_based,
+            'debug': False,
+            'out_path': save_dir,
+            'verbose': True
+        }
+
+        model = cornac.models.LightRLA
     else:
         raise NotImplementedError
 

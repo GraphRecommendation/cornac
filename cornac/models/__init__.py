@@ -42,6 +42,7 @@ from .ibpr import IBPR
 from .kgat import KGAT
 from .knn import ItemKNN
 from .knn import UserKNN
+from .lightrla import LightRLA
 from .mcf import MCF
 from .mf import MF
 from .mmmf import MMMF
