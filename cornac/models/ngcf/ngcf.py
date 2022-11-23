@@ -182,18 +182,27 @@ class Model(nn.Module):
         return predictions
 
     def graph_predict(self, g: dgl.DGLHeteroGraph, embeddings):
+        preds = []
         with g.local_scope():
-            users, items = g.edges(etype=('ui'))
+            for stype, etype, dtype in g.canonical_etypes:
+                if g[etype].num_edges():
+                    src, dst = g.edges(etype=etype)
 
-            return torch.mul(embeddings['user'][users], embeddings['item'][items]).sum(dim=1)
+                    preds.append(torch.mul(embeddings[stype][src], embeddings[dtype][dst]).sum(dim=1))
+
+        return torch.cat()
 
     def l2_loss(self, pos, neg, emb):
-        users, items_i = pos.edges(etype=('ui'))
-        _, items_j = neg.edges(etype=('ui'))
+        loss = 0
+        for stype, etype, dtype in pos.canonical_etypes:
+            src, dst_i = pos.edges(etype=etype)
+            _, dst_j = neg.edges(etype=etype)
 
-        u_emb, i_emb, j_emb = emb['user'][users], emb['item'][items_i],emb['item'][items_j]
+            s_emb, i_emb, j_emb = emb[stype][src], emb[dtype][dst_i], emb[dtype][dst_j]
 
-        loss = (1/2)*(u_emb.norm(2).pow(2) + i_emb.norm(2).pow(2) + j_emb.norm(2).pow(2)) / float(len(users))
+            loss += s_emb.norm(2).pow(2) + i_emb.norm(2).pow(2) + j_emb.norm(2).pow(2)
+
+        loss = 0.5 * loss / pos.num_src_nodes()
 
         return loss
 

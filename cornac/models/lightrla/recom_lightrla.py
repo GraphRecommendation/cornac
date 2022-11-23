@@ -2,11 +2,14 @@ import itertools
 import os
 from collections import defaultdict, Counter
 from copy import deepcopy
+from math import log2
 
+import numpy as np
 import torch
 from tqdm import tqdm
 
 import cornac.metrics
+from . import dgl_utils
 from ..recommender import Recommender
 from ...data import Dataset
 
@@ -30,6 +33,7 @@ class LightRLA(Recommender):
                  index=0,
                  use_tensorboard=True,
                  out_path=None,
+                 metrics=None,
                  ):
 
         from torch.utils.tensorboard import SummaryWriter
@@ -69,8 +73,16 @@ class LightRLA(Recommender):
 
         # Method
         self.train_graph = None
+        self.other_graph = None
         self.model = None
         self.reverse_etypes = None
+        if metrics is None:
+            if self.objective == 'ranking':
+                self.metrics = [cornac.metrics.NDCG(), cornac.metrics.AUC(), cornac.metrics.MAP()]
+            else:
+                self.metrics = [cornac.metrics.MSE(), cornac.metrics.RMSE()]
+        else:
+            self.metrics = metrics
 
         # Misc
         self.user_based = user_based
@@ -87,7 +99,7 @@ class LightRLA(Recommender):
         assert use_uva == use_cuda or not use_uva, 'use_cuda must be true when using uva.'
         assert objective == 'ranking' or objective == 'rating', f'This method only supports ranking or rating, ' \
 
-    def _construct_graph(self, norm='both'):
+    def _construct_graph(self, norm='both', equal_contribution=False):
         import dgl
         user_ntype = 'user'
         item_ntype = 'item'
@@ -95,11 +107,10 @@ class LightRLA(Recommender):
         opinion_ntype = 'opinion'
 
         # Get user-item edges while changing user indices.
-        users = torch.arange(self.train_set.matrix.shape[0], dtype=torch.int64)
-        items = torch.arange(self.train_set.matrix.shape[1], dtype=torch.int64)
         u, i = self.train_set.matrix.nonzero()
         ui = u, i
         iu = i, u
+        ui_sid = torch.LongTensor([self.train_set.sentiment.user_sentiment[user][item] for user, item in zip(u, i)])
 
         # get aspect and opinion
         aspect_c = Counter([a for aos in self.train_set.sentiment.sentiment.values() for a, _, _ in aos])
@@ -113,20 +124,38 @@ class LightRLA(Recommender):
             c_a = {k: a for k, a in zip(c_s, acc)}
             return set(filter(lambda x: c_a[x] <= s * percentage, c_a))
 
-        aspects = get_set(aspect_c, .5)
-        opinions = get_set(opinion_c, 1.)
-        ao_set = get_set(ao_c, .01)
+        def tf_idf(count, N, start, stop=None):
+            idf = {v: log2(N / sum([v in [aos[start] if stop is None else aos[start:stop] for aos in aoss]
+                                    for aoss in self.train_set.sentiment.sentiment.values()]))
+                   for v in count.keys()}
+            tf_idf = {v: (1 + log2(c)) * idf[v] for v, c in count.items()}
+            return tf_idf
 
-        print(f'Using {len(aspects)} aspects, {len(opinions)} opinions and {len(ao_set)} pairs.')
+        N = len(self.train_set.sentiment.sentiment)  # number of 'documents'
+        # a_tf_idf = tf_idf(aspect_c, N, 0)
+        # o_tf_idf = tf_idf(opinion_c, N, 1)
+        # ao_tf_idf = tf_idf(ao_c, N, 0, 2)
 
-        print({n: sum(d[v] for v in s) for n, d, s in [('a', aspect_c, aspects), ('o', opinion_c, opinions),
-                                                       ('ao', ao_c, ao_set)]})
+        # aspects = get_set(aspect_c, .5)
+        # opinions = get_set(opinion_c, 1.)
+        # ao_set = get_set(ao_c, .01)
+
+        # topk = int(len(ao_tf_idf) * .8)
+        # aspects = sorted(a_tf_idf, key=a_tf_idf.get, reverse=True)[:topk]
+        # opinions = sorted(o_tf_idf, key=o_tf_idf.get, reverse=True)[:topk]
+        # ao_set = sorted(ao_tf_idf, key=ao_tf_idf.get, reverse=True)[:topk]
+        ao_set = set(ao_c.keys())
+
+        # print(f'Using {len(aspects)} aspects, {len(opinions)} opinions and {len(ao_set)} pairs.')
+
+        # print({n: sum(d[v] for v in s) for n, d, s in [('a', aspect_c, aspects), ('o', opinion_c, opinions),
+        #                                                ('ao', ao_c, ao_set)]})
 
         amap = {v: k for k, v in self.train_set.sentiment.aspect_id_map.items()}
         omap = {v: k for k, v in self.train_set.sentiment.opinion_id_map.items()}
 
-        print(f'aspects: {[(k, amap[k]) for k in aspects][:20]}')
-        print(f'opinions: {[(k, omap[k]) for k in opinions][:20]}')
+        # print(f'aspects: {[(k, amap[k]) for k in aspects][:20]}')
+        # print(f'opinions: {[(k, omap[k]) for k in opinions][:20]}')
         print((f'sets: {[(amap[a], omap[o]) for a, o in ao_set][:20]}'))
 
         ou = [[], []]
@@ -149,47 +178,83 @@ class LightRLA(Recommender):
                         ai[0].append(aid)
                         ai[1].append(iid)
 
+
+        # Get unique
+        ou, oi, au, ai = [np.unique(np.array(arr).T, axis=0).T for arr in [ou, oi, au, ai]]
         print(f'Found {len(ou[0]) + len(oi[0])} opinion edges and {len(au[0]) + len(ai[0])} aspect edges.')
 
         graph_data = {
             (user_ntype, 'ui', item_ntype): ui,
             (user_ntype, 'ua', aspect_ntype): (au[1], au[0]),
-            # (user_ntype, 'uo', opinion_ntype): (ou[1], ou[0]),
+            (user_ntype, 'uo', opinion_ntype): (ou[1], ou[0]),
             (item_ntype, 'iu', user_ntype): iu,
             (item_ntype, 'ia', aspect_ntype): (ai[1], ai[0]),
-            # (item_ntype, 'io', opinion_ntype): (oi[1], oi[0]),
+            (item_ntype, 'io', opinion_ntype): (oi[1], oi[0]),
             (aspect_ntype, 'au', user_ntype): (au[0], au[1]),
             (aspect_ntype, 'ai', item_ntype): (ai[0], ai[1]),
-            # (opinion_ntype, 'ou', user_ntype): (oi[0], oi[1]),
-            # (opinion_ntype, 'oi', item_ntype): (oi[0], oi[1]),
+            (opinion_ntype, 'ou', user_ntype): (oi[0], oi[1]),
+            (opinion_ntype, 'oi', item_ntype): (oi[0], oi[1]),
         }
 
         new_g = dgl.heterograph(graph_data, num_nodes_dict={user_ntype: self.train_set.num_users,
                                                             item_ntype: self.train_set.num_items,
                                                             aspect_ntype: self.train_set.sentiment.num_aspects,
-                                                            # opinion_ntype: self.train_set.sentiment.num_opinions
+                                                            opinion_ntype: self.train_set.sentiment.num_opinions
                                 })
+
+        new_g.edges['ui'].data.update({'sid': ui_sid})
+        new_g.edges['iu'].data.update({'sid': ui_sid})
 
         for ntype in new_g.ntypes:
             new_g.nodes[ntype].data.update({'degrees': torch.zeros((new_g.num_nodes(ntype),))})
 
-        if norm == 'both':
+        # new_g = dgl.edge_type_subgraph(new_g, ['ui', 'iu'])
+
+        if norm in ['both', 'mean']:
             for _, etype, ntype in new_g.canonical_etypes:
                 # get degrees
                 dst_degrees = new_g.in_degrees(new_g.nodes(ntype), etype=etype).float()
+                if equal_contribution:
+                    dst_degrees = dst_degrees.to(torch.bool).to(dst_degrees.dtype)  # number of edge types.
                 new_g.nodes[ntype].data.update({'degrees': new_g.nodes[ntype].data['degrees'] + dst_degrees})
 
             for stype, etype, dtype in new_g.canonical_etypes:
                 u, v = new_g.edges(etype=etype)
-                src_degrees = new_g.nodes[stype].data['degrees'][u]
-                dst_degrees = new_g.nodes[dtype].data['degrees'][v]
+                if equal_contribution:
+                    src_degrees = new_g.out_degrees(etype=etype)[u]
+                    dst_degrees = new_g.in_degrees(etype=etype)[v]
+                else:
+                    src_degrees = new_g.nodes[stype].data['degrees'][u]
+                    dst_degrees = new_g.nodes[dtype].data['degrees'][v]
 
                 # calculate norm similar to eq. 3 of both ngcf and lgcn papers.
-                norm = torch.pow(src_degrees * dst_degrees, -0.5).unsqueeze(1)  # compute norm
-                new_g.edges[etype].data['norm'] = norm
+                if norm == 'mean':
+                    n = torch.pow(dst_degrees, -1.)
+                else:
+                    n = torch.pow(src_degrees * dst_degrees, -0.5)  # compute norm
+                if equal_contribution:
+                    # src_degrees = new_g.nodes[stype].data['degrees'][u]
+                    dst_degrees = new_g.nodes[dtype].data['degrees'][v]
+                    n *= torch.pow(dst_degrees, -1.) # Norm over edgetypes
+                new_g.edges[etype].data['norm'] = n.unsqueeze(1)
+
+        with new_g.local_scope():
+            funcs = {}
+            for s, e, d in new_g.canonical_etypes:
+                funcs[(s, e, d)] = (dgl.function.copy_e('norm', 'm'), dgl.function.sum('m', 'd'))
+
+            new_g.multi_update_all(funcs, 'sum')
+            for s, e, d in new_g.canonical_etypes:
+                funcs[(s, e, d)] = (dgl.function.u_mul_e('d', 'norm', 'm'), dgl.function.sum('m', 'd'))
+            for _ in range(10):
+                new_g.multi_update_all(funcs, 'sum')
+
+            for ntype in new_g.ntypes:
+                print(f'{ntype}: {new_g.nodes[ntype].data["d"][:5]}')
+
         reverse_etypes = {'ui': 'iu',
-                          # 'ou': 'uo',
-                          # 'oi': 'io',
+                          'ou': 'uo',
+                          'oi': 'io',
                           'au': 'ua',
                           'ai': 'ia'
                           }
@@ -218,7 +283,17 @@ class LightRLA(Recommender):
             c_a = {k: a for k, a in zip(c_s, acc)}
             return set(filter(lambda x: c_a[x] <= s * percentage, c_a))
 
-        ao_set = get_set(ao_c, .2)
+        def tf_idf(count, N, start, stop=None):
+            idf = {v: log2(N / sum([v in [aos[start] if stop is None else aos[start:stop] for aos in aoss]
+                                    for aoss in self.train_set.sentiment.sentiment.values()]))
+                   for v in count.keys()}
+            tf_idf = {v: (1 + log2(c)) * idf[v] for v, c in count.items()}
+            return tf_idf
+
+        N = len(self.train_set.sentiment.sentiment)  # number of 'documents'
+        ao_tf_idf = tf_idf(ao_c, N, 0, 2)
+        topk = int(len(ao_tf_idf) * 1)
+        ao_set = sorted(ao_tf_idf, key=ao_tf_idf.get, reverse=True)[:topk]
 
         print(f'Using {len(ao_set)} pairs.')
 
@@ -244,6 +319,8 @@ class LightRLA(Recommender):
                         aou[1].append(uid)
                         aoi[0].append(ao)
                         aoi[1].append(iid)
+
+        aou, aoi = [np.unique(np.array(arr).T, axis=0).T for arr in [aou, aoi]]
 
         graph_data = {
             (user_ntype, 'ui', item_ntype): ui,
@@ -288,7 +365,7 @@ class LightRLA(Recommender):
         from .lightrla import Model
         super().fit(train_set, val_set)
 
-        self.train_graph, self.reverse_etypes = self._construct_graph2()
+        self.train_graph, self.reverse_etypes = self._construct_graph(equal_contribution=True, norm='mean')
 
         # create model
         self.model = Model(self.train_graph, self.node_dim, self.layer_dims, self.layer_dropout, self.use_cuda)
@@ -314,7 +391,7 @@ class LightRLA(Recommender):
 
         # Edges where label is non-zero and user and item occurs more than once.
         g = self.train_graph
-        cf_eids = {'ui': g['ui'].edges(form='eid')}
+        cf_eids = {etype: g[etype].edges(form='eid') for etype in ['ui']}
         num_workers = self.num_workers
 
         if self.use_uva:
@@ -329,9 +406,10 @@ class LightRLA(Recommender):
             thread = None
 
         # Create sampler
-        sampler = dgl.dataloading.MultiLayerFullNeighborSampler(len(self.layer_dims))
+        sampler = dgl_utils.RLABlockSampler(self.train_set, len(self.layer_dims))
+        self.other_graph = sampler.review_node_graph
         if self.objective == 'ranking':
-            neg_sampler = cornac.utils.dgl.UniformItemSampler(1, self.train_set.num_items)
+            neg_sampler = dgl.dataloading.negative_sampler.Uniform(1)
         else:
             neg_sampler = None
 
@@ -347,13 +425,8 @@ class LightRLA(Recommender):
         # Initialize training params.
         cf_optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
-        if self.objective == 'ranking':
-            metrics = [cornac.metrics.NDCG(), cornac.metrics.AUC()]
-        else:
-            metrics = [cornac.metrics.MSE()]
-
         best_state = None
-        best_score = 0 if metrics[0].higher_better else float('inf')
+        best_score = 0 if self.metrics[0].higher_better else float('inf')
         best_epoch = -1
         for e in range(self.num_epochs):
             tot_losses = defaultdict(int)
@@ -401,15 +474,15 @@ class LightRLA(Recommender):
                         progress.set_description(f'Epoch {e}, ' + loss_str)
                     else:
                         if val_set is not None:
-                            results = self._validate(val_set, metrics)
-                            res_str = 'Val: ' + ', '.join([f'{m.name}: {r:.4f}' for m, r in zip(metrics, results)])
+                            results = self._validate(val_set)
+                            res_str = 'Val: ' + ', '.join([f'{m.name}: {r:.4f}' for m, r in zip(self.metrics, results)])
                             progress.set_description(f'Epoch {e}, ' + f'{loss_str}, ' + res_str)
 
                             if self.summary_writer is not None:
-                                for m, r in zip(metrics, results):
+                                for m, r in zip(self.metrics, results):
                                     self.summary_writer.add_scalar(f'val/{m.name}', r, e)
 
-                            if self.model_selection == 'best' and (results[0] > best_score if metrics[0].higher_better
+                            if self.model_selection == 'best' and (results[0] > best_score if self.metrics[0].higher_better
                                     else results[0] < best_score):
                                 best_state = deepcopy(self.model.state_dict())
                                 best_score = results[0]
@@ -423,23 +496,23 @@ class LightRLA(Recommender):
             self.model.inference(g, self.batch_size)
 
         if val_set is not None and self.summary_writer is not None:
-            results = self._validate(val_set, metrics)
-            self.summary_writer.add_hparams(self.parameters, dict(zip([m.name for m in metrics], results)))
+            results = self._validate(val_set)
+            self.summary_writer.add_hparams(self.parameters, dict(zip([m.name for m in self.metrics], results)))
 
-        _ = self._validate(val_set, metrics)
+        _ = self._validate(val_set)
 
-    def _validate(self, val_set, metrics):
+    def _validate(self, val_set):
         from ...eval_methods.base_method import rating_eval, ranking_eval
         import torch
 
         self.model.eval()
         with torch.no_grad():
-            self.model.inference(self.train_graph, self.batch_size)
+            self.model.inference(self.train_graph, self.other_graph, self.batch_size)
             if val_set is not None:
                 if self.objective == 'ranking':
-                    (result, _) = ranking_eval(self, metrics, self.train_set, val_set)
+                    (result, _) = ranking_eval(self, self.metrics, self.train_set, val_set)
                 else:
-                    (result, _) = rating_eval(self, metrics, val_set, user_based=self.user_based)
+                    (result, _) = rating_eval(self, self.metrics, val_set, user_based=self.user_based)
         return result
 
     def score(self, user_idx, item_idx=None):

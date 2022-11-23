@@ -259,4 +259,4 @@ if __name__ == '__main__':
     kwargs = ' '.join(sys.argv[3:])
     print(kwargs)
     kwargs = eval(kwargs)
-    run(kwargs, dataset, method, f'results/{dataset}/{method}')
+    run(kwargs, dataset, method, f'results/{dataset}/{kwargs.get("name", method)}')
