@@ -19,31 +19,42 @@ class ReviewRepresentationConv(nn.Module):
             g.srcdata.update({'h': x})
             funcs = {etype: (dgl.function.copy_u('h', 'm'), dgl.function.mean('m', 'h'))
                      for stype, etype, _ in g.canonical_etypes if stype in x}
-            g.multi_update_all(funcs, 'sum')
+            g.multi_update_all(funcs, 'mean')
 
             return g.dstdata['h']
 
 
 class ReviewAggregatorConv(nn.Module):
-    def __init__(self, in_dim, att_dim):
+    def __init__(self, in_dim, att_dim, n_nodes):
         super().__init__()
         self.w_o = nn.Linear(in_dim, att_dim)
+        self.w_u = nn.Linear(in_dim, att_dim)
+        self.w_g = nn.Linear(in_dim, att_dim)
         self.att = nn.Linear(att_dim, 1)
         self.activation = nn.LeakyReLU()
+        self.node_preference = nn.ModuleDict(
+            {ntype: nn.Embedding(n_nodes[ntype], in_dim) for ntype in n_nodes}
+        )
 
     def forward(self, g: dgl.DGLGraph, x: torch.Tensor):
         with g.local_scope():
-            src_feats, dst_feats = dgl.utils.expand_as_pair(x, g)
-
-            g.srcdata.update({'h': src_feats})
-            g.srcdata.update({'a':  {ntype: self.att(self.w_o(src_feats[ntype])) for ntype in src_feats}})
-            for etype in g.etypes:
+            src_feats, _ = dgl.utils.expand_as_pair(x, g)
+            g.srcdata.update({'h':  {ntype: self.w_o(src_feats[ntype])
+                                            + self.w_g(src_feats[ntype].sum(dim=0, keepdims=True))  # Global attension
+                                     for ntype in src_feats}})
+            for _, etype, dsttype in g.canonical_etypes:
                 if g[etype].num_edges():
-                    g[etype].apply_edges(dgl.function.copy_u('a', 'a'))
+                    if dsttype == 'user':
+                        g[etype].edata.update({'h': self.w_u(self.node_preference['item'](g[etype].edata['npid']))})
+                    else:
+                        g[etype].edata.update({'h': self.w_u(self.node_preference['user'](g[etype].edata['npid']))})
+                    g[etype].apply_edges(dgl.function.u_add_e('h', 'h', 'h'))
+                    g[etype].edata['a'] = self.att(self.activation(g[etype].edata.pop('h')))
 
                     # Softmax
                     g[etype].edata['a'] = dgl.ops.edge_softmax(g[etype], g[etype].edata['a'])
 
+            g.srcdata.update({'h': src_feats})
             funcs = {etype: (dgl.function.u_mul_e('h', 'a', 'm'), dgl.function.sum('m', 'h')) for etype in g.etypes
                      if g[etype].num_edges()}
             g.multi_update_all(funcs, 'mean')
@@ -69,7 +80,8 @@ class Model(nn.Module):
             in_dim = out_dim
 
         self.representation_conv = ReviewRepresentationConv()
-        self.review_conv = ReviewAggregatorConv(layer_dims[-1], layer_dims[-1])
+        self.review_conv = ReviewAggregatorConv(layer_dims[-1], layer_dims[-1],
+                                                {ntype: g.num_nodes(ntype) for ntype in ['user', 'item']})
 
         self.loss_fn = torch.nn.LogSigmoid()
 
@@ -99,10 +111,12 @@ class Model(nn.Module):
             else:
                 embeddings[ntype] = torch.cat(embedding, 1)
 
+        dst_nodes = {ntype: blocks[-1].dstnodes(ntype) for ntype in ['user', 'item']}
+        graph_emb = {ntype: embeddings[ntype][dst_nodes[ntype]] for ntype in dst_nodes}
         embeddings = self.representation_conv(blocks[-2], embeddings)
         embeddings = self.review_conv(blocks[-1], embeddings)
 
-        return embeddings
+        return {ntype: graph_emb[ntype] + embeddings[ntype] for ntype in graph_emb}
 
     def inference(self, g: dgl.DGLGraph, other_g: dgl.DGLGraph, batch_size=None):
         embeddings = {ntype: f.weight for ntype, f in self.features.items()}
@@ -144,6 +158,7 @@ class Model(nn.Module):
             for ntype, embedding in embeddings.items():
                 all_embeddings[ntype].append(embedding)
 
+        g1 = g
         # Concatenate layer embeddings for each node type
         for ntype, embedding in all_embeddings.items():
             if self.lightgcn:
@@ -156,7 +171,23 @@ class Model(nn.Module):
 
         g = dgl.edge_type_subgraph(other_g, [etype for stype, etype, dtype in other_g.canonical_etypes
                                              if dtype in ['user', 'item']])
-        self.embeddings = self.review_conv(dgl.to_block(g, include_dst_in_src=False).to(device), emb)
+        emb2 = self.review_conv(dgl.to_block(g, include_dst_in_src=False).to(device), emb)
+
+        emb2 = {ntype: all_embeddings[ntype] + emb2[ntype] for ntype in emb2}
+
+        # test
+        u, v = g1.edges(etype='ui')
+        v_r = v[torch.randperm(len(v))]
+        print("")
+        self_sim = torch.std(all_embeddings['user'])
+        self_sim2 = torch.std(emb['review'])
+        self_sim3 = torch.std(emb2['user'])
+        print(f'All usim: {self_sim}, rsim: {self_sim2}, end usim: {self_sim3}')
+        print(f'All sim: {(all_embeddings["user"][u] * all_embeddings["item"][v]).sum(dim=1).mean():.5f}'
+              f', rand: {(all_embeddings["user"][u] * all_embeddings["item"][v_r]).sum(dim=1).mean():.5f}')
+        print(f'End sim: {(emb2["user"][u] * emb2["item"][v]).sum(dim=1).mean():.5f}'
+              f', rand: {(emb2["user"][u] * emb2["item"][v_r]).sum(dim=1).mean():.5f}')
+        self.embeddings = emb2
 
     def predict(self, users, items, rank_all=False):
         if self.use_cuda:

@@ -493,7 +493,7 @@ class LightRLA(Recommender):
 
         if best_state is not None:
             self.model.load_state_dict(best_state)
-            self.model.inference(g, self.batch_size)
+            self.model.inference(g, self.other_graph, self.batch_size)
 
         if val_set is not None and self.summary_writer is not None:
             results = self._validate(val_set)

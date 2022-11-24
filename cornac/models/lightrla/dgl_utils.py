@@ -74,8 +74,8 @@ class RLABlockSampler(dgl.dataloading.MultiLayerFullNeighborSampler):
             'review': max(train_set.sentiment.sentiment) + 1
         })
 
-        # for etype, data in edata.items():
-        #     g.edges[etype].data.update({'sid': torch.LongTensor(data)})
+        g.edges['ri'].data['npid'] = ur[0]
+        g.edges['ru'].data['npid'] = ir[0]
 
         return g
 
@@ -112,13 +112,19 @@ class RLABlockSampler(dgl.dataloading.MultiLayerFullNeighborSampler):
 
             exclude_eids.update(ee)
 
-        for _ in range(2):
+        for i in range(2):
+            dst_nodes = seed_nodes
+            if i % 2 == 0:
+                seed_nodes = {k: v for k, v in seed_nodes.items() if k != 'review'}
+            else:
+                seed_nodes = {k: v for k, v in seed_nodes.items() if k == 'review'}
+            
             frontier = self.review_node_graph.sample_neighbors(
                 seed_nodes, -1, edge_dir=self.edge_dir, prob=self.prob,
                 replace=self.replace, output_device=self.output_device,
                 exclude_edges=exclude_eids)
             eid = frontier.edata[dgl.EID]
-            block = dgl.to_block(frontier, seed_nodes, include_dst_in_src=False)
+            block = dgl.to_block(frontier, dst_nodes=dst_nodes)
             block.edata[dgl.EID] = eid
             seed_nodes = block.srcdata[dgl.NID]
             blocks.insert(0, block)
