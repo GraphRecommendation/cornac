@@ -214,7 +214,8 @@ class NARRE_BPR(Recommender):
                     loop.set_postfix(loss=train_loss.result().numpy(), vl=val_loss, bvl=best_val_loss, be=self.best_epoch)
             current_weights = self.model.get_weights(self.train_set, self.batch_size, max_num_review=self.max_num_review)
             if self.val_set is not None:
-                self.X, self.Y, self.W1, self.user_embedding, self.item_embedding, self.bu, self.bi, self.mu, self.A = current_weights
+                # self.X, self.Y, self.W1, self.user_embedding, self.item_embedding, self.bu, self.bi, self.mu, self.A = current_weights
+                self.X, self.Y, self.W1, self.A = current_weights
                 [current_val_ndcg], _ = ranking_eval(
                     model=self,
                     metrics=[NDCG()],
@@ -235,9 +236,9 @@ class NARRE_BPR(Recommender):
 
         # save weights for predictions
         self.X, self.Y, self.W1, self.user_embedding, self.item_embedding, self.bu, self.bi, self.mu, self.A = best_weights if self.val_set is not None and self.model_selection == 'best' else current_weights
+        # self.X, self.Y, self.W1, self.A = best_weights if self.val_set is not None and self.model_selection == 'best' else current_weights
         if self.verbose:
             print("Learning completed!")
-
 
     def save(self, save_dir=None):
         """Save a recommender model to the filesystem.
@@ -306,8 +307,10 @@ class NARRE_BPR(Recommender):
                 raise ScoreException(
                     "Can't make score prediction for (user_id=%d)" % user_idx
                 )
-            h0 = (self.user_embedding[user_idx] + self.X[user_idx]) * (self.item_embedding + self.Y)
-            known_item_scores = h0.dot(self.W1) + self.bu[user_idx] + self.bi + self.mu
+            # h0 = (self.user_embedding[user_idx] + self.X[user_idx]) * (self.item_embedding + self.Y)
+            # known_item_scores = h0.dot(self.W1) + self.bu[user_idx] + self.bi + self.mu
+            h0 = self.X[user_idx] * self.Y
+            known_item_scores = h0.dot(self.W1)
             return known_item_scores.ravel()
         else:
             if self.train_set.is_unk_user(user_idx) or self.train_set.is_unk_item(

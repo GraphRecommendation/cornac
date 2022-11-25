@@ -211,14 +211,19 @@ class Model:
             layers.Add()([l_user_embedding(i_user_id), Xu]), layers.Add()([l_item_embedding(i_item_j_id), Yj])
         ])
 
+        h0 = layers.Multiply(name="h0")([Xu, Yi])
+        h1 = layers.Multiply(name="h1")([Xu, Yj])
+
         W1 = layers.Dense(1, activation=None, use_bias=False, name="W1")
         add_global_bias = AddGlobalBias(init_value=self.global_mean, name="global_bias")
+        # r_i = W1(h0)
         r_i = layers.Add(name="prediction_i")([
             W1(h0),
             user_bias(i_user_id),
             item_bias(i_item_i_id)
         ])
         r_i = add_global_bias(r_i)
+        # r_j = W1(h1)
         r_j = layers.Add(name="prediction_j")([
             W1(h1),
             user_bias(i_user_id),
@@ -267,3 +272,4 @@ class Model:
         bi = self.graph.get_layer('item_bias').get_weights()[0]
         mu = self.graph.get_layer('global_bias').get_weights()[0][0]
         return X, Y, W1, user_embedding, item_embedding, bu, bi, mu, A
+        # return X, Y, W1, A
