@@ -211,8 +211,8 @@ class Model:
             layers.Add()([l_user_embedding(i_user_id), Xu]), layers.Add()([l_item_embedding(i_item_j_id), Yj])
         ])
 
-        h0 = layers.Multiply(name="h0")([Xu, Yi])
-        h1 = layers.Multiply(name="h1")([Xu, Yj])
+        # h0 = layers.Multiply(name="h0")([Xu, Yi])
+        # h1 = layers.Multiply(name="h1")([Xu, Yj])
 
         W1 = layers.Dense(1, activation=None, use_bias=False, name="W1")
         add_global_bias = AddGlobalBias(init_value=self.global_mean, name="global_bias")

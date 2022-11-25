@@ -14,6 +14,8 @@
 # ============================================================================
 
 import os
+
+import keras
 import numpy as np
 from tqdm.auto import trange
 
@@ -184,9 +186,9 @@ class NARRE_BPR(Recommender):
         from ...metrics import AUC, NDCG
         if not hasattr(self, 'optimizer_'):
             if self.optimizer == 'rmsprop':
-                self.optimizer_ = keras.optimizers.RMSprop(learning_rate=self.learning_rate)
+                optimizer_ = keras.optimizers.RMSprop(learning_rate=self.learning_rate)
             else:
-                self.optimizer_ = keras.optimizers.Adam(learning_rate=self.learning_rate)
+                optimizer_ = keras.optimizers.Adam(learning_rate=self.learning_rate)
         train_loss = keras.metrics.Mean(name="loss")
         val_loss = 0.
         best_val_loss = 0
@@ -208,14 +210,14 @@ class NARRE_BPR(Recommender):
                         training=True,
                     )
                 gradients = tape.gradient(loss, self.model.graph.trainable_variables)
-                self.optimizer_.apply_gradients(zip(gradients, self.model.graph.trainable_variables))
+                optimizer_.apply_gradients(zip(gradients, self.model.graph.trainable_variables))
                 train_loss(loss)
                 if i % 10 == 0:
                     loop.set_postfix(loss=train_loss.result().numpy(), vl=val_loss, bvl=best_val_loss, be=self.best_epoch)
             current_weights = self.model.get_weights(self.train_set, self.batch_size, max_num_review=self.max_num_review)
             if self.val_set is not None:
-                # self.X, self.Y, self.W1, self.user_embedding, self.item_embedding, self.bu, self.bi, self.mu, self.A = current_weights
-                self.X, self.Y, self.W1, self.A = current_weights
+                self.X, self.Y, self.W1, self.user_embedding, self.item_embedding, self.bu, self.bi, self.mu, self.A = current_weights
+                # self.X, self.Y, self.W1, self.A = current_weights
                 [current_val_ndcg], _ = ranking_eval(
                     model=self,
                     metrics=[NDCG()],
@@ -241,6 +243,7 @@ class NARRE_BPR(Recommender):
             print("Learning completed!")
 
     def save(self, save_dir=None):
+        import datetime
         """Save a recommender model to the filesystem.
 
         Parameters
@@ -254,10 +257,15 @@ class NARRE_BPR(Recommender):
         model = self.model
         del self.model
 
+        # model_dir = os.path.join(save_dir, self.name)
+        # os.makedirs(model_dir, exist_ok=True)
+        # timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
+        # model_file = os.path.join(model_dir, "{}.pkl".format(timestamp))
+
         model_file = Recommender.save(self, save_dir)
 
         self.model = model
-        self.model.save(model_file.replace(".pkl", ".cpt"))
+        self.model.graph.save(model_file.replace(".pkl", ".cpt"))
 
         return model_file
 
@@ -281,7 +289,26 @@ class NARRE_BPR(Recommender):
         """
         from tensorflow import keras
         model = Recommender.load(model_path, trainable)
-        model.model = keras.models.load_model(model.load_from.replace(".pkl", ".cpt"))
+
+        from cornac.models.narre.narre_bpr import Model
+        model.model = Model(
+                    model.train_set.num_users,
+                    model.train_set.num_items,
+                    model.train_set.review_text.vocab,
+                    model.train_set.global_mean,
+                    n_factors=model.n_factors,
+                    embedding_size=model.embedding_size,
+                    id_embedding_size=model.id_embedding_size,
+                    attention_size=model.attention_size,
+                    kernel_sizes=model.kernel_sizes,
+                    n_filters=model.n_filters,
+                    dropout_rate=model.dropout_rate,
+                    max_text_length=model.max_text_length,
+                    pretrained_word_embeddings=model.init_params.get('pretrained_word_embeddings'),
+                    verbose=model.verbose,
+                    seed=model.seed,
+                )
+        model.model.graph.load_weights(model_path.replace(".pkl", ".cpt"))
 
         return model
 
