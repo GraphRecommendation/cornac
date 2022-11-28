@@ -73,7 +73,8 @@ class LightRLA(Recommender):
 
         # Method
         self.train_graph = None
-        self.other_graph = None
+        self.nr_graph = None
+        self.rn_graph = None
         self.model = None
         self.reverse_etypes = None
         if metrics is None:
@@ -208,7 +209,10 @@ class LightRLA(Recommender):
         for ntype in new_g.ntypes:
             new_g.nodes[ntype].data.update({'degrees': torch.zeros((new_g.num_nodes(ntype),))})
 
-        # new_g = dgl.edge_type_subgraph(new_g, ['ui', 'iu'])
+        for etype in new_g.etypes:
+            new_g[etype].edata['a'] = torch.ones_like(new_g[etype].edges(form='eid'))
+
+        new_g = dgl.edge_type_subgraph(new_g, ['ui', 'iu'])
 
         if norm in ['both', 'mean']:
             for _, etype, ntype in new_g.canonical_etypes:
@@ -227,6 +231,10 @@ class LightRLA(Recommender):
                     src_degrees = new_g.nodes[stype].data['degrees'][u]
                     dst_degrees = new_g.nodes[dtype].data['degrees'][v]
 
+                #
+                # src_degrees = new_g.out_degrees(etype=etype)[u]
+                # dst_degrees = new_g.in_degrees(etype=etype)[v]
+
                 # calculate norm similar to eq. 3 of both ngcf and lgcn papers.
                 if norm == 'mean':
                     n = torch.pow(dst_degrees, -1.)
@@ -235,7 +243,7 @@ class LightRLA(Recommender):
                 if equal_contribution:
                     # src_degrees = new_g.nodes[stype].data['degrees'][u]
                     dst_degrees = new_g.nodes[dtype].data['degrees'][v]
-                    n *= torch.pow(dst_degrees, -1.) # Norm over edgetypes
+                    # n *= torch.pow(dst_degrees, -1.) # Norm over edgetypes
                 new_g.edges[etype].data['norm'] = n.unsqueeze(1)
 
         with new_g.local_scope():
@@ -244,13 +252,12 @@ class LightRLA(Recommender):
                 funcs[(s, e, d)] = (dgl.function.copy_e('norm', 'm'), dgl.function.sum('m', 'd'))
 
             new_g.multi_update_all(funcs, 'sum')
-            for s, e, d in new_g.canonical_etypes:
-                funcs[(s, e, d)] = (dgl.function.u_mul_e('d', 'norm', 'm'), dgl.function.sum('m', 'd'))
-            for _ in range(10):
-                new_g.multi_update_all(funcs, 'sum')
 
             for ntype in new_g.ntypes:
                 print(f'{ntype}: {new_g.nodes[ntype].data["d"][:5]}')
+
+            for ntype in new_g.ntypes:
+                print(f'{ntype:7s}: {new_g.nodes[ntype].data["d"].norm(1) / new_g.nodes[ntype].data["d"].numel():.5f}')
 
         reverse_etypes = {'ui': 'iu',
                           'ou': 'uo',
@@ -365,7 +372,7 @@ class LightRLA(Recommender):
         from .lightrla import Model
         super().fit(train_set, val_set)
 
-        self.train_graph, self.reverse_etypes = self._construct_graph(equal_contribution=True, norm='mean')
+        self.train_graph, self.reverse_etypes = self._construct_graph(equal_contribution=True, norm='both')
 
         # create model
         self.model = Model(self.train_graph, self.node_dim, self.layer_dims, self.layer_dropout, self.use_cuda)
@@ -407,7 +414,8 @@ class LightRLA(Recommender):
 
         # Create sampler
         sampler = dgl_utils.RLABlockSampler(self.train_set, len(self.layer_dims))
-        self.other_graph = sampler.review_node_graph
+        self.nr_graph = sampler.review_node_graph
+        self.rn_graph = sampler.rui_graph
         if self.objective == 'ranking':
             neg_sampler = dgl.dataloading.negative_sampler.Uniform(1)
         else:
@@ -493,7 +501,7 @@ class LightRLA(Recommender):
 
         if best_state is not None:
             self.model.load_state_dict(best_state)
-            self.model.inference(g, self.other_graph, self.batch_size)
+            self.model.inference(g, self.nr_graph, self.rn_graph, self.batch_size)
 
         if val_set is not None and self.summary_writer is not None:
             results = self._validate(val_set)
@@ -507,7 +515,7 @@ class LightRLA(Recommender):
 
         self.model.eval()
         with torch.no_grad():
-            self.model.inference(self.train_graph, self.other_graph, self.batch_size)
+            self.model.inference(self.train_graph, self.nr_graph, self.rn_graph, self.batch_size)
             if val_set is not None:
                 if self.objective == 'ranking':
                     (result, _) = ranking_eval(self, self.metrics, self.train_set, val_set)

@@ -21,29 +21,25 @@ class RLABlockSampler(dgl.dataloading.MultiLayerFullNeighborSampler):
         super().__init__(num_layers, **kwargs)
         # Mapping reviews to the users that written them and similarly for items as well as a mapping
         # from nodes to the review contains.
-        self.review_node_graph = self._build_graph(train_set)
+        self.review_node_graph, self.rui_graph = self._build_graph(train_set)
 
     def _build_graph(self, train_set):
         ur = [[], []]
-        ur_data = []
         ir = [[], []]
-        ir_data = []
         ar = [[], []]
-        ar_data = []
         o_r = [[], []]  # breaks naming convention as 'or' is python specific.
-        or_data = []
 
         # Get all edges from nodes to reviews
         for uid, isid in train_set.sentiment.user_sentiment.items():
             for iid, sid in isid.items():
                 # Edge between user (item) and review.
-                for arr, data, iden in [(ur, ur_data, uid), (ir, ir_data, iid)]:
+                for arr, iden in [(ur, uid), (ir, iid)]:
                     arr[0].append(iden)
                     arr[1].append(sid)
 
                 for aid, oid, _ in train_set.sentiment.sentiment[sid]:
                     # Edge between aspect (opinion) and review.
-                    for arr, data, iden in [(ar, ar_data, aid), (o_r, or_data, oid)]:
+                    for arr, iden in [(ar, aid), (o_r, oid)]:
                         arr[0].append(iden)
                         arr[1].append(sid)
 
@@ -58,14 +54,6 @@ class RLABlockSampler(dgl.dataloading.MultiLayerFullNeighborSampler):
             ('review', 'ru', 'user'): (ur[1], ur[0]),
             ('review', 'ri', 'item'): (ir[1], ir[0]),
         }
-        edata = {
-            'ur': ur_data,
-            'ir': ir_data,
-            'ar': ar_data,
-            'or': or_data,
-            'ru': ur_data,
-            'ri': ir_data
-        }
         g = dgl.heterograph(data, num_nodes_dict={
             'user': train_set.num_users,
             'item': train_set.num_items,
@@ -77,7 +65,8 @@ class RLABlockSampler(dgl.dataloading.MultiLayerFullNeighborSampler):
         g.edges['ri'].data['npid'] = ur[0]
         g.edges['ru'].data['npid'] = ir[0]
 
-        return g
+        return dgl.edge_type_subgraph(g, list(set(g.etypes).difference({'ri', 'ru'}))), \
+               dgl.edge_type_subgraph(g, ['ru', 'ri'])
 
     def sample_blocks(self, g, seed_nodes, exclude_eids=None):
         # If exclude eids, find the equivalent eid of the node_review_graph.
@@ -116,10 +105,12 @@ class RLABlockSampler(dgl.dataloading.MultiLayerFullNeighborSampler):
             dst_nodes = seed_nodes
             if i % 2 == 0:
                 seed_nodes = {k: v for k, v in seed_nodes.items() if k != 'review'}
+                i_g = self.rui_graph
             else:
                 seed_nodes = {k: v for k, v in seed_nodes.items() if k == 'review'}
+                i_g = self.review_node_graph
             
-            frontier = self.review_node_graph.sample_neighbors(
+            frontier = i_g.sample_neighbors(
                 seed_nodes, -1, edge_dir=self.edge_dir, prob=self.prob,
                 replace=self.replace, output_device=self.output_device,
                 exclude_edges=exclude_eids)
@@ -129,7 +120,7 @@ class RLABlockSampler(dgl.dataloading.MultiLayerFullNeighborSampler):
             seed_nodes = block.srcdata[dgl.NID]
             blocks.insert(0, block)
 
-        input_nodes, _, _blocks = super(RLABlockSampler, self).sample_blocks(g, seed_nodes, exclude_eids)
+        input_nodes, _, _blocks = super(RLABlockSampler, self).sample_blocks(g, output_nodes, exclude_eids)
 
         # Stack correctly
         for b in reversed(_blocks):
