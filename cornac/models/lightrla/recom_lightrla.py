@@ -72,9 +72,11 @@ class LightRLA(Recommender):
                 self.parameters[k] = attr
 
         # Method
+        self.sampler = None
         self.train_graph = None
         self.nr_graph = None
         self.rn_graph = None
+        self.aos_graph = None
         self.model = None
         self.reverse_etypes = None
         if metrics is None:
@@ -212,7 +214,7 @@ class LightRLA(Recommender):
         for etype in new_g.etypes:
             new_g[etype].edata['a'] = torch.ones_like(new_g[etype].edges(form='eid'))
 
-        new_g = dgl.edge_type_subgraph(new_g, ['ui', 'iu'])
+        # new_g = dgl.edge_type_subgraph(new_g, ['ui', 'iu'])
 
         if norm in ['both', 'mean']:
             for _, etype, ntype in new_g.canonical_etypes:
@@ -373,9 +375,12 @@ class LightRLA(Recommender):
         super().fit(train_set, val_set)
 
         self.train_graph, self.reverse_etypes = self._construct_graph(equal_contribution=True, norm='both')
+        self.sampler = dgl_utils.RLA3BlockSampler(self.train_set, len(self.layer_dims))
+        self.nr_graph, self.rn_graph, self.aos_graph = self.sampler.get_graphs()
 
         # create model
-        self.model = Model(self.train_graph, self.node_dim, self.layer_dims, self.layer_dropout, self.use_cuda)
+        self.model = Model(self.train_graph, self.aos_graph,
+                           self.node_dim, self.layer_dims, self.layer_dropout, self.use_cuda)
         self.model.reset_parameters()
 
         if self.verbose:
@@ -413,15 +418,12 @@ class LightRLA(Recommender):
             thread = None
 
         # Create sampler
-        sampler = dgl_utils.RLABlockSampler(self.train_set, len(self.layer_dims))
-        self.nr_graph = sampler.review_node_graph
-        self.rn_graph = sampler.rui_graph
         if self.objective == 'ranking':
             neg_sampler = dgl.dataloading.negative_sampler.Uniform(1)
         else:
             neg_sampler = None
 
-        sampler = dgl.dataloading.as_edge_prediction_sampler(sampler, exclude='reverse_types',
+        sampler = dgl.dataloading.as_edge_prediction_sampler(self.sampler, exclude='reverse_types',
                                                              negative_sampler=neg_sampler,
                                                              reverse_etypes=self.reverse_etypes)
 
@@ -515,7 +517,7 @@ class LightRLA(Recommender):
 
         self.model.eval()
         with torch.no_grad():
-            self.model.inference(self.train_graph, self.nr_graph, self.rn_graph, self.batch_size)
+            self.model.inference(self.train_graph, self.nr_graph, self.rn_graph, self.aos_graph, self.batch_size)
             if val_set is not None:
                 if self.objective == 'ranking':
                     (result, _) = ranking_eval(self, self.metrics, self.train_set, val_set)

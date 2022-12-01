@@ -1,13 +1,42 @@
 """
 Based on https://github.com/dmlc/dgl/tree/master/examples/pytorch/NGCF modified to include LightGCN and using blocks.
 """
+from typing import Dict
 
 import dgl
 import torch
 import torch.nn as nn
 import dgl.function as fn
 
-from cornac.models.ngcf.ngcf import NGCFLayer
+
+class AOSConv(nn.Module):
+    def __init__(self, ntypes, n_nodes: Dict[str, int], dims, activation=nn.LeakyReLU):
+        super().__init__()
+        in_dim = dims[0]
+        self.embedding = nn.ModuleDict(
+            {ntype: nn.Embedding(n_nodes[ntype], in_dim) for ntype in ntypes}
+        )
+        in_dim *= len(ntypes)
+        self.mlps = nn.Sequential()
+        for out_dim in dims[1:]:
+            self.mlps.append(nn.Linear(in_dim, out_dim))
+            self.mlps.append(activation())
+            in_dim = out_dim
+
+    def forward(self, g: dgl.DGLGraph, x):
+        with g.local_scope():
+            g.srcdata['h'] = x
+            funcs = {etype: (fn.copy_u('h', 'm'), fn.sum('m', 'h')) for etype in g.etypes}
+            g.multi_update_all(funcs, 'stack')
+            x = g.dstdata['h']
+
+            if isinstance(x, torch.Tensor):
+                x = {g.dsttypes[0]: x}
+
+            for nt, e in x.items():
+                x[nt] = self.mlps(e.reshape(e.shape[0], -1))
+                # x[nt] = x[nt] / x[nt].norm(2).reshape(-1, 1)
+            return x
 
 
 class ReviewRepresentationConv(nn.Module):
@@ -51,9 +80,13 @@ class ReviewRepresentationConv(nn.Module):
             g.multi_update_all(funcs, 'sum')
 
             # Normalize softmax across all edge types and edges.
+            src_avg = {}
             for stype, etype, _ in g.canonical_etypes:
                 if stype in x:
                     g[etype].apply_edges(dgl.function.e_div_v('a', 'a', 'a'))
+                    with g.local_scope():
+                        g[etype].update_all(fn.copy_e('a', 'm'), fn.sum('m', 't'))
+                        src_avg[stype] = g.dstdata['t']['review'].mean()
             g.dstdata.pop('a')
 
             # # Aggregate
@@ -124,26 +157,41 @@ class ReviewAggregatorConv(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, g, in_dim, layer_dims, dropout, use_cuda=False):
+    def __init__(self, g, aos_graph, in_dim, layer_dims, dropout, use_cuda=False):
         super(Model, self).__init__()
         self.layer_dims = layer_dims
         self.use_cuda = use_cuda
         self.lightgcn = True
 
         self.features = nn.ModuleDict()
-        for ntype in g.ntypes:
+        for ntype in ['user', 'item']:  # user/item
             e = torch.nn.Embedding(g.number_of_nodes(ntype=ntype), in_dim)
             self.features[ntype] = e
 
-        self.layers = nn.ModuleList()
-        for out_dim in layer_dims:
-            self.layers.append(NGCFLayer(in_dim, out_dim, dropout, lightgcn=self.lightgcn))
-            in_dim = out_dim
+        # self.layers = nn.ModuleList()
+        # for out_dim in layer_dims:
+        #     self.layers.append(NGCFLayer(in_dim, out_dim, dropout, lightgcn=self.lightgcn))
+        #     in_dim = out_dim
 
-        self.representation_conv = ReviewRepresentationConv(list(set(g.ntypes).difference(['review'])),
+        self.aoe_conv = nn.ModuleDict()
+        self.representation_conv = nn.ModuleDict()
+        self.review_conv = nn.ModuleDict()
+        for ntype in ['user', 'item']:
+            self.aoe_conv[ntype] = AOSConv(aos_graph.srctypes, {nt: aos_graph.num_nodes(nt) for nt in aos_graph.srctypes},
+                                [in_dim, in_dim, in_dim, in_dim])
+            self.representation_conv[ntype] = ReviewRepresentationConv(list(set(g.ntypes).difference(['review'])),
                                                             layer_dims[-1], layer_dims[-1], layer_dims[-1])
-        self.review_conv = ReviewAggregatorConv(layer_dims[-1], layer_dims[-1],
-                                                {ntype: g.num_nodes(ntype) for ntype in ['user', 'item']})
+            nt = 'item' if ntype == 'user' else 'user'
+            self.review_conv[ntype] = ReviewAggregatorConv(layer_dims[-1], layer_dims[-1],
+                                                {nt: g.num_nodes(nt)})
+
+        # self.aoe_conv = AOSConv(aos_graph.srctypes, {nt: aos_graph.num_nodes(nt) for nt in aos_graph.srctypes},
+        #                         [in_dim, in_dim, in_dim, in_dim])
+        #
+        # self.representation_conv = ReviewRepresentationConv(list(set(g.ntypes).difference(['review'])),
+        #                                                     layer_dims[-1], layer_dims[-1], layer_dims[-1])
+        # self.review_conv = ReviewAggregatorConv(layer_dims[-1], layer_dims[-1],
+        #                                         {ntype: g.num_nodes(ntype) for ntype in ['user', 'item']})
 
         self.loss_fn = torch.nn.LogSigmoid()
         self.w_o = nn.Linear(layer_dims[-1]*2, 1, bias=False)
@@ -156,120 +204,166 @@ class Model(nn.Module):
                 nn.init.constant_(parameter, 0)
             else:
                 nn.init.xavier_normal_(parameter)
+    #
+    # def forward(self, node_ids, blocks):
+    #     dst_nodes = {ntype: blocks[-3].dstnodes(ntype) for ntype in set(blocks[-3].ntypes)} # Get final nodes
+    #     # x = {ntype: self.features[ntype](nids) for ntype, nids in node_ids.items()} # get initial embeddings
+    #     # embeddings = {ntype: [embedding[dst_nodes[ntype]]] for ntype, embedding in x.items()}  # get first embeddings
+    #     #
+    #     # # test = {ntype: [] for ntype in x}
+    #     # # for i, (block, layer) in enumerate(zip(blocks, self.layers)):
+    #     # #     x = layer(block, x)
+    #     # #     for ntype, embedding in x.items():
+    #     # #         embeddings[ntype].append(embedding[dst_nodes[ntype]])
+    #     # #         test[ntype].append(embedding.norm(1) / embedding.numel())
+    #     #
+    #     # # Concatenate layer embeddings for each node type
+    #     # for ntype, embedding in embeddings.items():
+    #     #     if self.lightgcn:
+    #     #         embeddings[ntype] = torch.mean(torch.stack(embedding), dim=0)
+    #     #     else:
+    #     #         embeddings[ntype] = torch.cat(embedding, 1)
+    #     #
+    #     # dst_nodes = {ntype: blocks[-1].dstnodes(ntype) for ntype in ['user', 'item']}
+    #     # graph_emb = {ntype: embeddings[ntype][dst_nodes[ntype]] for ntype in dst_nodes}
+    #
+    #     x = {ntype: self.aoe_conv.embedding[ntype](nids) for ntype, nids in node_ids.items()
+    #          if ntype in self.aoe_conv.embedding}
+    #     embeddings = self.aoe_conv(blocks[0], x)
+    #     x = {ntype: self.features[ntype](nids) for ntype, nids in blocks[-2].srcdata[dgl.NID].items()
+    #          if ntype in self.features}
+    #     x.update(embeddings)
+    #     embeddings = self.representation_conv(blocks[-2], x)
+    #     embeddings = self.review_conv(blocks[-1], embeddings)
+    #
+    #     # # norm
+    #     # for emb in [graph_emb, embeddings]:
+    #     #     for ntype, e in emb.items():
+    #     #         # For numerical stability.
+    #     #         with torch.no_grad():
+    #     #             e.clamp_(min=1e-2)
+    #     #
+    #     #         emb[ntype] = e / e.norm(2, dim=-1).unsqueeze(-1)
+    #
+    #     # embeddings = {ntype: torch.cat([graph_emb[ntype], embeddings[ntype]], dim=-1)
+    #     #               for ntype in graph_emb}
+    #
+    #     return embeddings
 
     def forward(self, node_ids, blocks):
-        dst_nodes = {ntype: blocks[-3].dstnodes(ntype) for ntype in set(blocks[-3].ntypes)} # Get final nodes
-        x = {ntype: self.features[ntype](nids) for ntype, nids in node_ids.items()} # get initial embeddings
-        embeddings = {ntype: [embedding[dst_nodes[ntype]]] for ntype, embedding in x.items()}  # get first embeddings
+        results = {}
+        cur_block = 0
+        for nt in sorted(node_ids, reverse=True):
+            inner_node_ids = node_ids[nt]
 
-        test = {ntype: [] for ntype in x}
-        for i, (block, layer) in enumerate(zip(blocks, self.layers)):
-            x = layer(block, x)
-            for ntype, embedding in x.items():
-                embeddings[ntype].append(embedding[dst_nodes[ntype]])
-                test[ntype].append(embedding.norm(1) / embedding.numel())
+            x = {ntype: self.aoe_conv[nt].embedding[ntype](nids) for ntype, nids in inner_node_ids.items()
+                 if ntype in self.aoe_conv[nt].embedding}
+            embeddings = self.aoe_conv[nt](blocks[cur_block], x)
+            cur_block += 1
+            x = {ntype: self.features[ntype](nids) for ntype, nids in blocks[-2].srcdata[dgl.NID].items()
+                 if ntype in self.features}
+            x.update(embeddings)
+            embeddings = self.representation_conv[nt](blocks[cur_block], x)
+            cur_block += 1
+            embeddings = self.review_conv[nt](blocks[cur_block], embeddings)
+            cur_block += 1
+            results.update(embeddings)
 
-        # Concatenate layer embeddings for each node type
-        for ntype, embedding in embeddings.items():
-            if self.lightgcn:
-                embeddings[ntype] = torch.mean(torch.stack(embedding), dim=0)
-            else:
-                embeddings[ntype] = torch.cat(embedding, 1)
+        return results
 
-        dst_nodes = {ntype: blocks[-1].dstnodes(ntype) for ntype in ['user', 'item']}
-        graph_emb = {ntype: embeddings[ntype][dst_nodes[ntype]] for ntype in dst_nodes}
-        x = {ntype: self.features[ntype](nids) for ntype, nids in blocks[-2].srcdata[dgl.NID].items() if ntype != 'review'}
-        embeddings = self.representation_conv(blocks[-2], x)
-        embeddings = self.review_conv(blocks[-1], embeddings)
-
-        # # norm
-        # for emb in [graph_emb, embeddings]:
-        #     for ntype, e in emb.items():
-        #         # For numerical stability.
-        #         with torch.no_grad():
-        #             e.clamp_(min=1e-2)
-        #
-        #         emb[ntype] = e / e.norm(2, dim=-1).unsqueeze(-1)
-
-        embeddings = {ntype: torch.cat([graph_emb[ntype], embeddings[ntype]], dim=-1)
-                      for ntype in graph_emb}
-
-        return embeddings
-
-    def inference(self, g: dgl.DGLGraph, nr_graph: dgl.DGLGraph, rn_graph: dgl.DGLGraph, batch_size=None):
+    def inference(self, g: dgl.DGLGraph, nr_graph: dgl.DGLGraph, rn_graph: dgl.DGLGraph, aos_graph: dgl.DGLGraph,
+                  batch_size=None):
         embeddings = {ntype: f.weight for ntype, f in self.features.items()}
         device = embeddings[next(iter(embeddings))].device
-        all_embeddings = {ntype: [embedding] for ntype, embedding in embeddings.items()}
+        result = {}
+        for nt in ['user', 'item']:
+            embeddings = {ntype: f.weight for ntype, f in self.features.items()}
+            x = {ntype: f.weight for ntype, f in self.aoe_conv[nt].embedding.items()}
+            embeddings = self.aoe_conv[nt](aos_graph.to(device), x)
+            emb = self.representation_conv[nt](dgl.to_block(nr_graph).to(device), embeddings)
+            etypes = [et for st, et, dt in rn_graph.canonical_etypes if dt == nt]
+            emb2 = self.review_conv[nt](dgl.to_block(dgl.edge_type_subgraph(rn_graph, etypes)).to(device), emb)
+            result.update(emb2)
+        self.embeddings = result
 
-        for l, layer in enumerate(self.layers):
-            if batch_size is not None:
-                next_embeddings = {ntype: torch.zeros((g.number_of_nodes(ntype), self.layer_dims[l]),
-                                                      device=device)
-                                   for ntype, embedding in embeddings.items()}
-
-                sampler = dgl.dataloading.MultiLayerFullNeighborSampler(1)
-                dataloader = dgl.dataloading.NodeDataLoader(
-                    g,
-                    {k: torch.arange(g.number_of_nodes(k)) for k in g.ntypes},
-                    sampler,
-                    batch_size=batch_size,
-                    shuffle=True,
-                    drop_last=False, device=device)
-
-                # Within a layer, iterate over nodes in batches
-                for input_nodes, output_nodes, blocks in dataloader:
-                    block = blocks[0]
-
-                    if self.use_cuda:
-                        block = block.to('cuda')
-
-                    embedding = {k: embeddings[k][input_nodes[k]] for k in input_nodes.keys()}
-                    embedding = layer(block, embedding)
-
-                    for ntype, nodes in output_nodes.items():
-                        next_embeddings[ntype][nodes] = embedding[ntype]
-            else:
-                next_embeddings = layer(g, embeddings)
-
-            embeddings = next_embeddings
-
-            for ntype, embedding in embeddings.items():
-                all_embeddings[ntype].append(embedding)
-
-        g1 = g
-        # Concatenate layer embeddings for each node type
-        for ntype, embedding in all_embeddings.items():
-            if self.lightgcn:
-                all_embeddings[ntype] = torch.mean(torch.stack(embedding), dim=0)
-            else:
-                all_embeddings[ntype] = torch.cat(embedding, 1)
-
-        embeddings = {ntype: f.weight for ntype, f in self.features.items()}
-        emb = self.representation_conv(dgl.to_block(nr_graph).to(device), embeddings)
-        emb2 = self.review_conv(dgl.to_block(rn_graph).to(device), emb)
-
-        # for embs in [all_embeddings, emb2]:
-        #     for ntype, e in embs.items():
-        #         # For numerical stability.
-        #         with torch.no_grad():
-        #             e.clamp_(min=1e-2)
-        #
-        #         emb[ntype] = e / e.norm(2, dim=-1).unsqueeze(-1)
-        # test
-        u, v = g1.edges(etype='ui')
-        v_r = v[torch.randperm(len(v))]
-        print("")
-        self_sim = torch.std(all_embeddings['user'])
-        self_sim2 = torch.std(emb['review'])
-        self_sim3 = torch.std(emb2['user'])
-        print(f'All usim: {self_sim}, rsim: {self_sim2}, end usim: {self_sim3}')
-        print(f'All sim: {(all_embeddings["user"][u] * all_embeddings["item"][v]).sum(dim=1).mean():.5f}'
-              f', rand: {(all_embeddings["user"][u] * all_embeddings["item"][v_r]).sum(dim=1).mean():.5f}')
-        print(f'End sim: {(emb2["user"][u] * emb2["item"][v]).sum(dim=1).mean():.5f}'
-              f', rand: {(emb2["user"][u] * emb2["item"][v_r]).sum(dim=1).mean():.5f}')
-
-        emb2 = {ntype: torch.cat([all_embeddings[ntype], emb2[ntype]], dim=-1) for ntype in emb2}
-        self.embeddings = emb2
+    # def inference(self, g: dgl.DGLGraph, nr_graph: dgl.DGLGraph, rn_graph: dgl.DGLGraph, aos_graph: dgl.DGLGraph,
+    #               batch_size=None):
+    #     embeddings = {ntype: f.weight for ntype, f in self.features.items()}
+    #     device = embeddings[next(iter(embeddings))].device
+    #     # all_embeddings = {ntype: [embedding] for ntype, embedding in embeddings.items()}
+    #     #
+    #     # for l, layer in enumerate(self.layers):
+    #     #     if batch_size is not None:
+    #     #         next_embeddings = {ntype: torch.zeros((g.number_of_nodes(ntype), self.layer_dims[l]),
+    #     #                                               device=device)
+    #     #                            for ntype, embedding in embeddings.items()}
+    #     #
+    #     #         sampler = dgl.dataloading.MultiLayerFullNeighborSampler(1)
+    #     #         dataloader = dgl.dataloading.NodeDataLoader(
+    #     #             g,
+    #     #             {k: torch.arange(g.number_of_nodes(k)) for k in g.ntypes},
+    #     #             sampler,
+    #     #             batch_size=batch_size,
+    #     #             shuffle=True,
+    #     #             drop_last=False, device=device)
+    #     #
+    #     #         # Within a layer, iterate over nodes in batches
+    #     #         for input_nodes, output_nodes, blocks in dataloader:
+    #     #             block = blocks[0]
+    #     #
+    #     #             if self.use_cuda:
+    #     #                 block = block.to('cuda')
+    #     #
+    #     #             embedding = {k: embeddings[k][input_nodes[k]] for k in input_nodes.keys()}
+    #     #             embedding = layer(block, embedding)
+    #     #
+    #     #             for ntype, nodes in output_nodes.items():
+    #     #                 next_embeddings[ntype][nodes] = embedding[ntype]
+    #     #     else:
+    #     #         next_embeddings = layer(g, embeddings)
+    #     #
+    #     #     embeddings = next_embeddings
+    #     #
+    #     #     for ntype, embedding in embeddings.items():
+    #     #         all_embeddings[ntype].append(embedding)
+    #
+    #     # g1 = g
+    #     # # Concatenate layer embeddings for each node type
+    #     # for ntype, embedding in all_embeddings.items():
+    #     #     if self.lightgcn:
+    #     #         all_embeddings[ntype] = torch.mean(torch.stack(embedding), dim=0)
+    #     #     else:
+    #     #         all_embeddings[ntype] = torch.cat(embedding, 1)
+    #
+    #     embeddings = {ntype: f.weight for ntype, f in self.features.items()}
+    #     x = {ntype: f.weight for ntype, f in self.aoe_conv.embedding.items()}
+    #     # embeddings.update(self.aoe_conv(aos_graph, x))
+    #     embeddings = self.aoe_conv(aos_graph, x)
+    #     emb = self.representation_conv(dgl.to_block(nr_graph).to(device), embeddings)
+    #     emb2 = self.review_conv(dgl.to_block(rn_graph).to(device), emb)
+    #
+    #     # for embs in [all_embeddings, emb2]:
+    #     #     for ntype, e in embs.items():
+    #     #         # For numerical stability.
+    #     #         with torch.no_grad():
+    #     #             e.clamp_(min=1e-2)
+    #     #
+    #     #         emb[ntype] = e / e.norm(2, dim=-1).unsqueeze(-1)
+    #     # test
+    #     # u, v = g1.edges(etype='ui')
+    #     # v_r = v[torch.randperm(len(v))]
+    #     # print("")
+    #     # self_sim = torch.std(all_embeddings['user'])
+    #     # self_sim2 = torch.std(emb['review'])
+    #     # self_sim3 = torch.std(emb2['user'])
+    #     # print(f'All usim: {self_sim}, rsim: {self_sim2}, end usim: {self_sim3}')
+    #     # print(f'All sim: {(all_embeddings["user"][u] * all_embeddings["item"][v]).sum(dim=1).mean():.5f}'
+    #     #       f', rand: {(all_embeddings["user"][u] * all_embeddings["item"][v_r]).sum(dim=1).mean():.5f}')
+    #     # print(f'End sim: {(emb2["user"][u] * emb2["item"][v]).sum(dim=1).mean():.5f}'
+    #     #       f', rand: {(emb2["user"][u] * emb2["item"][v_r]).sum(dim=1).mean():.5f}')
+    #
+    #     # emb2 = {ntype: torch.cat([all_embeddings[ntype], emb2[ntype]], dim=-1) for ntype in emb2}
+    #     self.embeddings = emb2
 
     def predict(self, users, items, rank_all=False):
         if self.use_cuda:
