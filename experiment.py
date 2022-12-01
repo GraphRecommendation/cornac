@@ -31,7 +31,7 @@ def run(in_kwargs, dataset, method, save_dir='.'):
     user_based = in_kwargs.pop('user_based', True)
     objective = in_kwargs['objective'] = in_kwargs.get('objective', 'ranking')  # Ranking is default
 
-    if method == 'hear':
+    if method in ['hear', 'testrec']:
         default_kwargs = {
             'use_cuda': True,
             'use_uva': False,
@@ -55,7 +55,10 @@ def run(in_kwargs, dataset, method, save_dir='.'):
             'out_path': save_dir,
             'verbose': True
         }
-        model = cornac.models.HEAR
+        if method == 'hear':
+            model = cornac.models.HEAR
+        else:
+            model = cornac.models.TestRec
         # Same dropout
         if 'dropout' in in_kwargs:
             in_kwargs['layer_dropout'] = in_kwargs['dropout']
@@ -94,7 +97,7 @@ def run(in_kwargs, dataset, method, save_dir='.'):
         if 'dropout' in in_kwargs:
             in_kwargs['layer_dropouts'] = in_kwargs['dropout']
             in_kwargs['edge_dropouts'] = in_kwargs['dropout']
-    elif method == 'hagerec':
+    elif method in ['hagerec', 'testrec']:
         default_kwargs = {
             'use_cuda': True,
             'use_uva': False,

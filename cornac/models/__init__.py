@@ -42,7 +42,6 @@ from .ibpr import IBPR
 from .kgat import KGAT
 from .knn import ItemKNN
 from .knn import UserKNN
-from .lightrla import LightRLA
 from .mcf import MCF
 from .mf import MF
 from .mmmf import MMMF
@@ -61,6 +60,7 @@ from .sbpr import SBPR
 from .skm import SKMeans
 from .sorec import SoRec
 from .svd import SVD
+from .testrec import TestRec
 from .trirank import TriRank
 from .vaecf import VAECF
 from .vbpr import VBPR
