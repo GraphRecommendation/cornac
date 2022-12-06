@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 import dgl.utils
 import torch
 from dgl.ops import edge_softmax
@@ -8,10 +10,11 @@ from cornac.models.hear.dgl_utils import HearReviewDataset, HearReviewSampler, H
 
 
 class HypergraphLayer(nn.Module):
-    def __init__(self, in_dim, out_dim):
+    def __init__(self, in_dim, out_dim, non_linear=True):
         super().__init__()
         self.in_dim = in_dim
         self.out_dim = out_dim
+        self.non_linear = non_linear
         self.linear = nn.Linear(in_dim, out_dim)
         self.activation = nn.LeakyReLU()
 
@@ -29,7 +32,11 @@ class HypergraphLayer(nn.Module):
 
             g.update_all(self.message('h', 'h', 'm'), fn.sum('m', 'h'))
 
-            return self.activation(self.linear(dgl.mean_nodes(g, 'h')))
+            out = dgl.mean_nodes(g, 'h')
+            if self.non_linear:
+                out = self.activation(self.linear(out))
+
+            return out
 
 
 class HEARConv(nn.Module):
@@ -197,7 +204,7 @@ class HEARConv(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, n_nodes, n_relations, aggregator, predictor, node_dim, review_dim, final_dim, transr_dim, num_heads,
+    def __init__(self, n_nodes, n_relations, n_sentiments, aggregator, predictor, node_dim, review_dim, final_dim, transr_dim, num_heads,
                  layer_dropout, attention_dropout, learned_node_embeddings=None, learned_preference=False,
                  learned_embeddings=False):
         super().__init__()
@@ -218,15 +225,15 @@ class Model(nn.Module):
                     nn.LeakyReLU()
             )
 
-        self.review_conv = HypergraphLayer(node_dim, review_dim)
+        self.review_conv = HypergraphLayer(node_dim, review_dim, non_linear=True)
         self.review_agg = HEARConv(aggregator, n_nodes, n_relations, review_dim, final_dim, num_heads,
                                    feat_drop=layer_dropout[1], attn_drop=attention_dropout)
 
         self.node_dropout = nn.Dropout(layer_dropout[0])
 
-        self.transr_w_rui = nn.Linear(node_dim*2 + review_dim, transr_dim, bias=False)
-        self.transr_w_a = nn.Linear(node_dim, transr_dim, bias=False)
-        self.relation_vector = nn.Parameter(torch.zeros((1, transr_dim)))
+        self.transr_src = nn.Parameter(torch.zeros((n_sentiments, node_dim*2 + review_dim, transr_dim)))
+        self.transr_dst = nn.Parameter(torch.zeros((n_sentiments, node_dim*2, transr_dim)))
+        self.transr_rel = nn.Parameter(torch.zeros((n_sentiments, transr_dim)))
 
         if aggregator.startswith('narre'):
             self.w_0 = nn.Linear(review_dim, final_dim)
@@ -268,11 +275,11 @@ class Model(nn.Module):
     def _trans_r_propagate(self, g, x):
         with g.local_scope():
             g.srcdata['h'] = x
-            out = []
-            for etype in g.etypes:
+            out = defaultdict(list)
+            for stype, etype, dtype in g.canonical_etypes:
                 g[etype].update_all(fn.copy_u('h', 'm'), fn.sum('m', 'h'))
-                out.append(g[etype].dstdata['h'])
-            return torch.cat(out, dim=-1)
+                out[dtype].append(g[etype].dstdata['h'])
+            return {ntype: torch.cat(o, dim=-1) for ntype, o in out.items()}
 
     def trans_r_forward(self, blocks, x):
         # Get review embeddings
@@ -282,20 +289,27 @@ class Model(nn.Module):
         # Get user/item embeddings
         x.update({ntype: self.node_dropout(self.get_initial_embedings(nids))
                   for ntype, nids in blocks[1].srcdata[dgl.NID].items()
-                  if ntype in ['user', 'item']})
+                  if ntype != 'review' and blocks[1].num_src_nodes(ntype)})
 
         # Get rui embeddings
         x = self._trans_r_propagate(blocks[1], x)
-        x = self.transr_w_rui(x) + self.relation_vector
 
-        return {'rui': x}
+        return x
+
+    def _trans_r_plausibility(self, rhs_field, lhs_field, edge, out):
+        def func(edges):
+            src = torch.tanh_(dgl.ops.gather_mm(edges.src[rhs_field], self.transr_src, idx_b=edges.data[edge]))
+            dst = torch.tanh_(dgl.ops.gather_mm(edges.dst[lhs_field], self.transr_dst, idx_b=edges.data[edge]))
+            plausibility = src + self.transr_rel[edges.data[edge]] - dst
+            plausibility = plausibility.norm(2, dim=-1, keepdim=True) ** 2
+            # plausibility = torch.mul(src + self.transr_rel[edges.data[edge]], dst).sum(dim=-1)
+            return {out: plausibility}
+        return func
 
     def trans_r_pred(self, g, x):
-        a_emb = self.node_dropout(self.get_initial_embedings(g.dstdata[dgl.NID]))
-        x.update({'aspect': self.transr_w_a(a_emb)})
         with g.local_scope():
             g.ndata['h'] = x
-            g.apply_edges(fn.u_dot_v('h', 'h', 'p'))
+            g.apply_edges(self._trans_r_plausibility('h', 'h', 'sent', 'p'))
             return g.edata['p']
 
     def forward(self, blocks, x):
@@ -347,7 +361,11 @@ class Model(nn.Module):
             g.apply_edges(fn.u_dot_v('h', 'h', 'm'))
             g.apply_edges(fn.u_add_v('b', 'b', 'b'))
 
-            return g.edata['m'] #+ g.edata['b'].unsqueeze(-1)
+            out = g.edata['m']
+            if use_preference:
+                out += g.edata['b'].unsqueeze(-1)
+
+            return out #+ g.edata['b'].unsqueeze(-1)
 
     def graph_predict(self, g: dgl.DGLGraph, x, use_preference=False):
         if self.predictor == 'dot':
@@ -400,6 +418,9 @@ class Model(nn.Module):
             i = i_emb
 
         h = (u * i).sum(-1)
+
+        if use_preference:
+            h += (self.bias[user] + self.bias[item])
         return h.reshape(-1, 1) #+ (self.bias[user] + self.bias[item]).reshape(-1, 1)
 
     def predict(self, user, item, use_preference=False):

@@ -232,12 +232,12 @@ class GATv2NARREConv(dgl.nn.GATv2Conv):
 
 
 class TranRBlockSampler(dgl.dataloading.NeighborSampler):
-    def __init__(self, review_graphs, node_filter, ntype_range, **kwargs):
+    def __init__(self, review_graphs, sentiment_modality, node_filter, ntype_range, **kwargs):
         super().__init__([-1], **kwargs)
         self.review_graphs = review_graphs
         self.node_filter = node_filter
         self.ntype_range = ntype_range
-        self.rui_a_graph, self.n_rui_graph = self._construct_rui_aspect_graph()
+        self.rui_a_graph, self.n_rui_graph = self._construct_rui_ao_graph(sentiment_modality)
 
     def _construct_rui_aspect_graph(self):
         node_data = OrderedDict()
@@ -277,6 +277,56 @@ class TranRBlockSampler(dgl.dataloading.NeighborSampler):
 
         g = dgl.heterograph(edata)
 
+        return rui_g, g
+
+    def _construct_rui_ao_graph(self, sentiment_modality):
+        sentiment_mapping = {s: i for i, s in enumerate(set([aos[2] for sid in sentiment_modality.sentiment.values()
+                                                             for aos in sid]))}
+        rui_data = OrderedDict()
+        ao_data = OrderedDict()
+        edges = []
+        edata = []
+        cur_rui_i = 0
+        cur_ao_i = 0
+        for uid, isid in sentiment_modality.user_sentiment.items():
+            uid += self.ntype_range['user'][0]
+            for iid, sid in isid.items():
+                iid += self.ntype_range['item'][0]
+                for aid, oid, sent in sentiment_modality.sentiment[sid]:
+                    aid += self.ntype_range['aspect'][0]
+                    oid += self.ntype_range['opinion'][0]
+                    sent = sentiment_mapping[sent]
+                    rui_node = (sid, uid, iid)
+                    ao_node = (aid, oid)
+
+                    # If node not in dict, assign new identifier and increase counter
+                    if (ruiid := rui_data.get(rui_node, cur_rui_i)) == cur_rui_i:
+                        rui_data[rui_node] = ruiid
+                        cur_rui_i += 1
+
+                    if (aoid := ao_data.get(ao_node, cur_ao_i)) == cur_ao_i:
+                        ao_data[ao_node] = aoid
+                        cur_ao_i += 1
+
+                    edges.append([ruiid, aoid])
+                    edata.append(sent)
+
+        edges = torch.LongTensor(edges).T
+        data = {
+            ('rui', 'na', 'ao'): (edges[0], edges[1])
+        }
+        rui_g = dgl.heterograph(data)
+        rui_g.edata['sent'] = torch.LongTensor(edata)
+
+        data = {}
+        for node_data, names in [(rui_data, ['review', 'user', 'item']), (ao_data, ['aspect', 'opinion'])]:
+            dst_name = ''.join([n[0] for n in names])
+            tuples = torch.LongTensor(list(node_data.keys())).T
+            iden = torch.LongTensor(list(node_data.values()))
+            for t, n in zip(tuples, names):
+                data[(n, n[0]+dst_name[0], dst_name)] = (t, iden)
+
+        g = dgl.heterograph(data)
         return rui_g, g
 
     def get_graphs(self):

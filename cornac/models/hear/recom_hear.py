@@ -240,9 +240,10 @@ class HEAR(Recommender):
         super().fit(train_set, val_set)
         n_nodes = self._create_graphs(train_set)  # graphs are as attributes of model.
         n_r_types = max(self.node_review_graph.edata['r_type']) + 1
+        n_sentiments = len(set([aos[2] for sid in self.train_set.sentiment.sentiment.values() for aos in sid]))
 
         # create model
-        self.model = Model(n_nodes, n_r_types, self.review_aggregator, self.predictor, self.node_dim,
+        self.model = Model(n_nodes, n_r_types, n_sentiments, self.review_aggregator, self.predictor, self.node_dim,
                            self.review_dim, self.final_dim, 32, self.num_heads, [self.layer_dropout]*2,
                            self.attention_dropout, learned_embeddings=self.learned_embeddings,
                            learned_preference=self.learned_preference,
@@ -309,7 +310,7 @@ class HEAR(Recommender):
                                                 num_workers=num_workers, use_prefetch_thread=thread)
 
         # Create transr sampler
-        sampler = dgl_utils.TranRBlockSampler(self.review_graphs, self.node_filter, self.ntype_ranges)
+        sampler = dgl_utils.TranRBlockSampler(self.review_graphs, self.train_set.sentiment, self.node_filter, self.ntype_ranges)
         g, rui = sampler.get_graphs()
         eids = sampler.get_eids()  #{k: v.to(self.device) for k, v in sampler.get_eids().items()}
         neg_sampler = dgl.dataloading.negative_sampler.Uniform(1)
@@ -346,8 +347,7 @@ class HEAR(Recommender):
                     x = self.model.get_initial_embedings(input_nodes)
                     x = self.model.trans_r_forward(blocks, x)
 
-                    for gs in [edge_subgraph, neg_subgraph]:
-                        gs.dstdata[dgl.NID] += self.ntype_ranges['aspect'][0]
+                    neg_subgraph.edata['sent'] = edge_subgraph.edata['sent']
 
                     pred = self.model.trans_r_pred(edge_subgraph, x)
                     pred_j = self.model.trans_r_pred(neg_subgraph, x)
@@ -454,6 +454,9 @@ class HEAR(Recommender):
                     if self.model_selection == 'best':
                         print('Using best state for fine tuning.')
                         self.model.load_state_dict(best_state)
+                        results = self._validate(val_set, metrics)
+                        best_score = results[0]
+                        print(f'Best score with preference: {best_score}')
                         # optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
                         # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max' if metrics[0].higher_better else 'min',
                         #                    patience=patience)
