@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from typing import Mapping
 
 import dgl.dataloading
@@ -229,3 +230,88 @@ class GATv2NARREConv(dgl.nn.GATv2Conv):
             else:
                 return
 
+
+class TranRBlockSampler(dgl.dataloading.NeighborSampler):
+    def __init__(self, review_graphs, node_filter, ntype_range, **kwargs):
+        super().__init__([-1], **kwargs)
+        self.review_graphs = review_graphs
+        self.node_filter = node_filter
+        self.ntype_range = ntype_range
+        self.rui_a_graph, self.n_rui_graph = self._construct_rui_aspect_graph()
+
+    def _construct_rui_aspect_graph(self):
+        node_data = OrderedDict()
+        edges = []
+        cur_i = 0
+        for r, g in self.review_graphs.items():
+            nids, _ = g.edges()
+            nids = torch.unique(nids)
+            user = nids[self.node_filter('user', nids)][0].item()
+            item = nids[self.node_filter('item', nids)][0].item()
+            aspects = nids[self.node_filter('aspect', nids)].numpy() - self.ntype_range['aspect'][0]
+            for aspect in aspects:
+                node = (r, user, item)
+                if node in node_data:
+                    nid = node_data[node]
+                else:
+                    nid = cur_i
+                    node_data[node] = nid
+                    cur_i += 1
+                edges.append([nid, aspect])
+
+        edges = torch.LongTensor(edges).T
+        edata = {
+            ('rui', 'na', 'aspect'): (edges[0], edges[1])
+        }
+        rui_g = dgl.heterograph(edata)
+        rui_g.ndata['aspect'].update({'org': rui_g.nodes('aspect') + self.ntype_range['aspect'][0]})
+
+        rui = torch.LongTensor(list(node_data.keys())).T
+        rui_id = torch.LongTensor(list(node_data.values()))
+
+        edata = {
+            ('review', 'rr', 'rui'): (rui[0], rui_id),
+            ('user', 'ur', 'rui'): (rui[1], rui_id),
+            ('item', 'ir', 'rui'): (rui[2], rui_id),
+        }
+
+        g = dgl.heterograph(edata)
+
+        return rui_g, g
+
+    def get_graphs(self):
+        return self.rui_a_graph, self.n_rui_graph
+
+    def get_eids(self):
+        return {'na': self.rui_a_graph.edges('eid')}
+
+    def sample_blocks(self, g, seed_nodes, exclude_eids=None):
+        output_nodes = seed_nodes
+
+        # Sample users, review and so forth based on id
+        blocks = []
+        for fanout in reversed(self.fanouts):
+            frontier = self.n_rui_graph.sample_neighbors(
+                seed_nodes, fanout, edge_dir=self.edge_dir, prob=self.prob,
+                replace=self.replace, output_device=self.output_device,
+                exclude_edges=exclude_eids)
+            eid = frontier.edata[dgl.EID]
+            block = dgl.to_block(frontier, seed_nodes, include_dst_in_src=False)
+            block.edata[dgl.EID] = eid
+            seed_nodes = block.srcdata[dgl.NID]
+            blocks.insert(0, block)
+
+        r_gs = [self.review_graphs[sid] for sid in blocks[0].srcdata[dgl.NID]['review'].cpu().numpy()]
+        r_gs = dgl.compact_graphs(r_gs)
+        nid = [bg.ndata[dgl.NID] for bg in r_gs]
+
+        batch = dgl.batch(r_gs)
+
+        # Get original ids
+        nid = torch.cat(nid)
+        batch.ndata[dgl.NID] = nid
+
+        blocks.insert(0, batch)
+        input_nodes = nid
+
+        return input_nodes, output_nodes, blocks

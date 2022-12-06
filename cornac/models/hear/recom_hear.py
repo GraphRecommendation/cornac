@@ -1,15 +1,17 @@
 import os
-from collections import defaultdict
+from collections import defaultdict, Counter
 from copy import deepcopy
 from math import sqrt
 from tqdm import tqdm
+
+from nltk.stem import PorterStemmer
 
 from ..recommender import Recommender
 from ...data import Dataset
 
 
 class HEAR(Recommender):
-    def __init__(self, name='HEAR', use_cuda=False, use_uva=False,
+    def __init__(self, name='HEAR', use_cuda=False, use_uva=False, stemming=True,
                  batch_size=128,
                  num_workers=0,
                  num_epochs=10,
@@ -92,6 +94,9 @@ class HEAR(Recommender):
         self.model = None
         self.n_items = 0
         self.plateaued = False
+        self.stemming = stemming
+        self.ntype_ranges = None
+        self.node_filter = None
 
         # Misc
         self.user_based = user_based
@@ -125,8 +130,19 @@ class HEAR(Recommender):
         n_users = len(train_set.uid_map)
         n_items = len(train_set.iid_map)
         self.n_items = n_items
-        n_aspects = len(sentiment_modality.aspect_id_map)
-        n_opinions = len(sentiment_modality.opinion_id_map)
+
+        def get_map(mapping, stemmer):
+            id_to_new_word = {i: stemmer.stem(w) for w, i in mapping.items()}
+            word_to_new_id = {w: i for i, w in enumerate(sorted(set(id_to_new_word.values())))}
+            id_to_new_id = {i: word_to_new_id[w] for i, w in id_to_new_word.items()}
+            return id_to_new_id
+
+        stemmer = PorterStemmer()
+        a2a = get_map(sentiment_modality.aspect_id_map, stemmer)
+        o2o = get_map(sentiment_modality.opinion_id_map, stemmer)
+
+        n_aspects = len(a2a) if self.stemming else len(sentiment_modality.aspect_id_map)
+        n_opinions = len(o2o) if self.stemming else len(sentiment_modality.opinion_id_map)
         n_nodes = n_users + n_items + n_aspects + n_opinions
 
         user_item_review_map = {(uid + n_items, iid): rid for uid, irid in sentiment_modality.user_sentiment.items()
@@ -144,6 +160,10 @@ class HEAR(Recommender):
                 a_o_count = defaultdict(int)
                 aos = sentiment_modality.sentiment[sid]
                 for aid, oid, _ in aos:
+                    if self.stemming:
+                        aid = a2a[aid]
+                        oid = o2o[oid]
+
                     aid += n_items + n_users
                     oid += n_items + n_users + n_aspects
 
@@ -207,6 +227,11 @@ class HEAR(Recommender):
 
         self.node_review_graph.edata['r_type'] = torch.LongTensor(ratings)-1
 
+        self.ntype_ranges = {'item': (0, n_items), 'user': (n_items, n_items+n_users),
+                        'aspect': (n_items+n_users, n_items+n_users+n_aspects),
+                        'opinion': (n_items+n_users+n_aspects, n_items+n_users+n_aspects+n_opinions)}
+        self.node_filter = lambda t, nids: (nids >= self.ntype_ranges[t][0]) * (nids < self.ntype_ranges[t][1])
+
         return n_nodes
 
     def fit(self, train_set: Dataset, val_set=None):
@@ -218,7 +243,7 @@ class HEAR(Recommender):
 
         # create model
         self.model = Model(n_nodes, n_r_types, self.review_aggregator, self.predictor, self.node_dim,
-                           self.review_dim, self.final_dim, self.num_heads, [self.layer_dropout]*2,
+                           self.review_dim, self.final_dim, 32, self.num_heads, [self.layer_dropout]*2,
                            self.attention_dropout, learned_embeddings=self.learned_embeddings,
                            learned_preference=self.learned_preference,
                            learned_node_embeddings=self.learned_node_embeddings)
@@ -283,8 +308,19 @@ class HEAR(Recommender):
                                                 drop_last=True, device=self.device, use_uva=self.use_uva,
                                                 num_workers=num_workers, use_prefetch_thread=thread)
 
+        # Create transr sampler
+        sampler = dgl_utils.TranRBlockSampler(self.review_graphs, self.node_filter, self.ntype_ranges)
+        g, rui = sampler.get_graphs()
+        eids = sampler.get_eids()  #{k: v.to(self.device) for k, v in sampler.get_eids().items()}
+        neg_sampler = dgl.dataloading.negative_sampler.Uniform(1)
+        sampler = dgl.dataloading.as_edge_prediction_sampler(sampler, negative_sampler=neg_sampler)
+        tr_dataloader = dgl.dataloading.DataLoader(g, eids, sampler, batch_size=self.batch_size, shuffle=True,
+                                                drop_last=True, device=self.device, use_uva=self.use_uva,
+                                                num_workers=num_workers, use_prefetch_thread=thread)
+
         # Initialize training params.
         optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
+        tr_optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
 
         if self.objective == 'ranking':
             metrics = [cornac.metrics.NDCG(), cornac.metrics.AUC()]
@@ -293,16 +329,67 @@ class HEAR(Recommender):
 
         best_state = None
         best_score = 0 if metrics[0].higher_better else float('inf')
-        patience = self.early_stopping // 3 if self.early_stopping is not None else 10
-        print(f'Setting patience to {patience}')
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max' if metrics[0].higher_better else 'min',
-                                           patience=patience)
+        # patience = self.early_stopping // 3 if self.early_stopping is not None else 10
+        # print(f'Setting patience to {patience}')
+        # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max' if metrics[0].higher_better else 'min',
+        #                                    patience=patience)
         best_epoch = 0
         epoch_length = len(dataloader)
+        tr_length = len(tr_dataloader)
         for e in range(self.num_epochs):
             tot_losses = defaultdict(int)
             cur_losses = {}
             self.model.train()
+
+            with tqdm(tr_dataloader, disable=not self.verbose) as progress:
+                for i, (input_nodes, edge_subgraph, neg_subgraph, blocks) in enumerate(progress, 1):
+                    x = self.model.get_initial_embedings(input_nodes)
+                    x = self.model.trans_r_forward(blocks, x)
+
+                    for gs in [edge_subgraph, neg_subgraph]:
+                        gs.dstdata[dgl.NID] += self.ntype_ranges['aspect'][0]
+
+                    pred = self.model.trans_r_pred(edge_subgraph, x)
+                    pred_j = self.model.trans_r_pred(neg_subgraph, x)
+                    acc = (pred < pred_j).sum() / pred_j.shape.numel()
+
+                    # Reverse of CF, as we want to minimize the distance.
+                    loss = self.model.ranking_loss(pred_j, pred, 'bpr')
+
+                    loss.backward()
+                    tr_optimizer.step()
+                    tr_optimizer.zero_grad()
+
+                    cur_losses['loss'] = loss.detach()
+                    cur_losses['acc'] = acc.detach()
+                    for k, v in cur_losses.items():
+                        tot_losses[k] += v
+
+                    if self.summary_writer is not None:
+                        for k, v in cur_losses.items():
+                            self.summary_writer.add_scalar(f'train/tr/{k}', v, e * tr_length + i)
+
+                    loss_str = ','.join([f'{k}:{v/i:.3f}' for k, v in tot_losses.items()])
+                    if i != tr_length or val_set is None:
+                        progress.set_description(f'Epoch {e}, ' + loss_str)
+                    else:
+                        results = self._validate(val_set, metrics)
+                        res_str = 'Val: ' + ', '.join([f'{m.name}:{r:.4f}' for m, r in zip(metrics, results)])
+                        progress.set_description(f'Epoch {e}, {loss_str}, ' + res_str)
+
+                        if self.summary_writer is not None:
+                            for m, r in zip(metrics, results):
+                                self.summary_writer.add_scalar(f'val/tr/{m.name}', r, e)
+
+                        if self.model_selection == 'best' and (results[0] > best_score if metrics[0].higher_better
+                                    else results[0] < best_score):
+                                best_state = deepcopy(self.model.state_dict())
+                                best_score = results[0]
+                                best_epoch = e
+
+            tot_losses = defaultdict(int)
+            cur_losses = {}
+
             with tqdm(dataloader, disable=not self.verbose) as progress:
                 for i, batch in enumerate(progress, 1):
                     if self.objective == 'ranking':
@@ -344,8 +431,8 @@ class HEAR(Recommender):
                         res_str = 'Val: ' + ', '.join([f'{m.name}:{r:.4f}' for m, r in zip(metrics, results)])
                         progress.set_description(f'Epoch {e}, ' + f'{loss_str}, ' + res_str)
                         
-                        if scheduler is not None:
-                            scheduler.step(results[0])
+                        # if scheduler is not None:
+                        #     scheduler.step(results[0])
 
                         if self.summary_writer is not None:
                             for m, r in zip(metrics, results):
@@ -367,9 +454,15 @@ class HEAR(Recommender):
                     if self.model_selection == 'best':
                         print('Using best state for fine tuning.')
                         self.model.load_state_dict(best_state)
-                        optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
-                        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max' if metrics[0].higher_better else 'min',
-                                           patience=patience)
+                        # optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
+                        # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max' if metrics[0].higher_better else 'min',
+                        #                    patience=patience)
+
+        del self.node_filter
+        del g, eids, rui
+        del dataloader
+        del tr_dataloader
+        del sampler
 
         if best_state is not None:
             self.model.load_state_dict(best_state)

@@ -59,6 +59,11 @@ class NGCFLayer(nn.Module):
                         funcs[(srctype, etype, dsttype)] = (fn.u_mul_e('h', 'norm', 'm'), fn.sum('m', 'h'))
 
             g.multi_update_all(funcs, 'sum') #update all, reduce by first type-wisely then across different types
+            # funcs = {etype: (dgl.function.copy_e('norm', 'm'), dgl.function.sum('m', 's')) for etype in g.etypes
+            #          if g[etype].num_edges()}
+            # g.multi_update_all(funcs, 'sum')
+            # t = [(n, t.sum(), t.sum() / len(t)) for n, t in g.dstdata['s'].items()]
+            # print(t)
             feature_dict={}
             for ntype in g.dsttypes:
                 h = g.dstnodes[ntype].data['h']

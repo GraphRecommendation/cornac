@@ -2,6 +2,7 @@ import dgl.utils
 import torch
 from dgl.ops import edge_softmax
 from torch import nn
+import dgl.function as fn
 
 from cornac.models.hear.dgl_utils import HearReviewDataset, HearReviewSampler, HearReviewCollator
 
@@ -26,7 +27,7 @@ class HypergraphLayer(nn.Module):
         with g.local_scope():
             g.ndata['h'] = x
 
-            g.update_all(self.message('h', 'h', 'm'), dgl.function.sum('m', 'h'))
+            g.update_all(self.message('h', 'h', 'm'), fn.sum('m', 'h'))
 
             return self.activation(self.linear(dgl.mean_nodes(g, 'h')))
 
@@ -157,7 +158,7 @@ class HEARConv(nn.Module):
                 if self.aggregator != 'narre-rel':
                     feat_qual = self.fc_qual(h_qual).view(-1, self._num_heads, self._out_feats)
                     graph.edata.update({'qual': feat_qual})
-                    graph.apply_edges(dgl.function.u_add_e('el', 'qual', 'e'))
+                    graph.apply_edges(fn.u_add_e('el', 'qual', 'e'))
                 else:
                     graph.edata.update({'qual': h_qual})
                     graph.apply_edges(self.rel_attention('qual', 'r_type', 'qual', self.fc_qual, self.fc_qual_bias,
@@ -165,7 +166,7 @@ class HEARConv(nn.Module):
                     graph.edata.update({'qual': graph.edata['qual'].view(-1, self._num_heads, self._out_feats)})
                     graph.edata.update({'e': graph.edata.pop('el') + graph.edata.pop('qual')})
             else:
-                graph.apply_edges(dgl.function.copy_u('el', 'e'))
+                graph.apply_edges(fn.copy_u('el', 'e'))
 
             e = self.leaky_relu(graph.edata.pop('e'))# (num_src_edge, num_heads, out_dim)
 
@@ -181,8 +182,8 @@ class HEARConv(nn.Module):
                 graph.srcdata.update({'el': h_src})
 
             # message passing
-            graph.update_all(dgl.function.u_mul_e('el', 'a', 'm'),
-                             dgl.function.sum('m', 'ft'))
+            graph.update_all(fn.u_mul_e('el', 'a', 'm'),
+                             fn.sum('m', 'ft'))
             rst = graph.dstdata['ft']
 
             # activation
@@ -196,7 +197,7 @@ class HEARConv(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, n_nodes, n_relations, aggregator, predictor, node_dim, review_dim, final_dim, num_heads,
+    def __init__(self, n_nodes, n_relations, aggregator, predictor, node_dim, review_dim, final_dim, transr_dim, num_heads,
                  layer_dropout, attention_dropout, learned_node_embeddings=None, learned_preference=False,
                  learned_embeddings=False):
         super().__init__()
@@ -222,6 +223,10 @@ class Model(nn.Module):
                                    feat_drop=layer_dropout[1], attn_drop=attention_dropout)
 
         self.node_dropout = nn.Dropout(layer_dropout[0])
+
+        self.transr_w_rui = nn.Linear(node_dim*2 + review_dim, transr_dim, bias=False)
+        self.transr_w_a = nn.Linear(node_dim, transr_dim, bias=False)
+        self.relation_vector = nn.Parameter(torch.zeros((1, transr_dim)))
 
         if aggregator.startswith('narre'):
             self.w_0 = nn.Linear(review_dim, final_dim)
@@ -260,6 +265,39 @@ class Model(nn.Module):
         else:
             return self.node_embedding_mlp(self.learned_node_embeddings[nodes])
 
+    def _trans_r_propagate(self, g, x):
+        with g.local_scope():
+            g.srcdata['h'] = x
+            out = []
+            for etype in g.etypes:
+                g[etype].update_all(fn.copy_u('h', 'm'), fn.sum('m', 'h'))
+                out.append(g[etype].dstdata['h'])
+            return torch.cat(out, dim=-1)
+
+    def trans_r_forward(self, blocks, x):
+        # Get review embeddings
+        x = self.node_dropout(x)
+        x = {'review': self.review_conv(blocks[0], x)}
+
+        # Get user/item embeddings
+        x.update({ntype: self.node_dropout(self.get_initial_embedings(nids))
+                  for ntype, nids in blocks[1].srcdata[dgl.NID].items()
+                  if ntype in ['user', 'item']})
+
+        # Get rui embeddings
+        x = self._trans_r_propagate(blocks[1], x)
+        x = self.transr_w_rui(x) + self.relation_vector
+
+        return {'rui': x}
+
+    def trans_r_pred(self, g, x):
+        a_emb = self.node_dropout(self.get_initial_embedings(g.dstdata[dgl.NID]))
+        x.update({'aspect': self.transr_w_a(a_emb)})
+        with g.local_scope():
+            g.ndata['h'] = x
+            g.apply_edges(fn.u_dot_v('h', 'h', 'p'))
+            return g.edata['p']
+
     def forward(self, blocks, x):
         x = self.node_dropout(x)
         x = self.review_conv(blocks[0], x)
@@ -275,7 +313,7 @@ class Model(nn.Module):
     def _graph_predict_dot(self, g: dgl.DGLGraph, x):
         with g.local_scope():
             g.ndata['h'] = x
-            g.apply_edges(dgl.function.u_dot_v('h', 'h', 'm'))
+            g.apply_edges(fn.u_dot_v('h', 'h', 'm'))
 
             return g.edata['m']
 
@@ -290,8 +328,8 @@ class Model(nn.Module):
 
             g.ndata['h'] = x + self.node_dropout(np)
             g.ndata['b'] = self.bias[g.ndata[dgl.NID]]
-            g.apply_edges(dgl.function.u_mul_v('h', 'h', 'm'))
-            g.apply_edges(dgl.function.u_add_v('b', 'b', 'b'))
+            g.apply_edges(fn.u_mul_v('h', 'h', 'm'))
+            g.apply_edges(fn.u_add_v('b', 'b', 'b'))
 
             return self.w_1(g.edata['m']) + g.edata['b'].unsqueeze(-1)
 
@@ -306,8 +344,8 @@ class Model(nn.Module):
             else:
                 g.ndata['h'] = x
             g.ndata['b'] = self.bias[g.ndata[dgl.NID]]
-            g.apply_edges(dgl.function.u_dot_v('h', 'h', 'm'))
-            g.apply_edges(dgl.function.u_add_v('b', 'b', 'b'))
+            g.apply_edges(fn.u_dot_v('h', 'h', 'm'))
+            g.apply_edges(fn.u_add_v('b', 'b', 'b'))
 
             return g.edata['m'] #+ g.edata['b'].unsqueeze(-1)
 

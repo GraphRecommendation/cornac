@@ -139,6 +139,8 @@ class TestRec(Recommender):
         self.ntype_ranges = {'item': (0, n_items), 'user': (n_items, n_items+n_users),
                         'aspect': (n_items+n_users, n_items+n_users+n_aspects),
                         'opinion': (n_items+n_users+n_aspects, n_items+n_users+n_aspects+n_opinions)}
+        sentiment_options = set(aos[2] for triplets in sentiment_modality.sentiment.values() for aos in triplets)
+        sentiment_map = {s: i for i, s in enumerate(sorted(sentiment_options))}
         for uid, isid in tqdm(sentiment_modality.user_sentiment.items(), desc='Creating review graphs',
                               total=len(sentiment_modality.user_sentiment), disable=not self.verbose):
             uid += n_items
@@ -149,28 +151,31 @@ class TestRec(Recommender):
                 edges = []
                 a_o_count = defaultdict(int)
                 aos = sentiment_modality.sentiment[sid]
-                for aid, oid, _ in aos:
+                for aid, oid, sentiment in aos:
                     aid += n_items + n_users
                     oid += n_items + n_users + n_aspects
+                    sentiment_id = sentiment_map[sentiment]
 
                     a_o_count[aid] += 1
                     a_o_count[oid] += 1
                     for f, s, t in [[uid, iid, aid], [uid, iid, oid], [uid, aid, oid], [iid, oid, aid]]:
-                        edges.append([f, s, edge_id])
-                        edges.append([s, t, edge_id])
-                        edges.append([t, f, edge_id])
-                        edges.append([f, f, edge_id])
-                        edges.append([s, s, edge_id])
-                        edges.append([t, t, edge_id])
+                        edges.append([f, s, edge_id, sentiment_id])
+                        edges.append([s, t, edge_id, sentiment_id])
+                        edges.append([t, f, edge_id, sentiment_id])
+                        edges.append([f, f, edge_id, sentiment_id])
+                        edges.append([s, s, edge_id, sentiment_id])
+                        edges.append([t, t, edge_id, sentiment_id])
                         edge_id += 1
 
-                src, dst = torch.LongTensor([e for e, _, _ in edges]), torch.LongTensor([e for _, e, _ in edges])
-                eids = torch.LongTensor([r for _, _, r in edges])
+                src, dst = torch.LongTensor([e for e, _, _, _ in edges]), torch.LongTensor([e for _, e, _, _ in edges])
+                eids = torch.LongTensor([r for _, _, r, _ in edges])
+                sentids = torch.LongTensor([s for _, _, _, s in edges])
                 g = dgl.graph((torch.cat([src, dst]), torch.cat([dst, src])), num_nodes=n_nodes)
 
                 # All hyperedges connect 3 nodes
                 g.edata['id'] = torch.cat([eids, eids])
                 g.edata['norm'] = torch.full((g.num_edges(),), 3 ** -1)
+                g.edata['sid'] = torch.cat([sentids, sentids])
 
                 # User and item have three hyper-edges for each AOS triple.
                 g.ndata['norm'] = torch.zeros((g.num_nodes()))
@@ -213,18 +218,18 @@ class TestRec(Recommender):
 
         self.node_review_graph.edata['r_type'] = torch.LongTensor(ratings)-1
 
-        return n_nodes
+        return n_nodes, len(sentiment_map)
 
     def fit(self, train_set: Dataset, val_set=None):
         from .testrec import Model
 
         super().fit(train_set, val_set)
-        n_nodes = self._create_graphs(train_set)  # graphs are as attributes of model.
+        n_nodes, n_sentiments = self._create_graphs(train_set)  # graphs are as attributes of model.
         n_r_types = max(self.node_review_graph.edata['r_type']) + 1
         self.node_filter = lambda t, nids: (nids >= self.ntype_ranges[t][0]) * (nids < self.ntype_ranges[t][1])
 
         # create model
-        self.model = Model(n_nodes, n_r_types, self.dst_ntypes, self.review_aggregator, self.predictor, self.node_dim,
+        self.model = Model(n_nodes, n_r_types, n_sentiments, self.dst_ntypes, self.review_aggregator, self.predictor, self.node_dim,
                            self.review_dim, self.final_dim, self.num_heads, [self.layer_dropout] * 2,
                            self.attention_dropout, learned_embeddings=self.learned_embeddings,
                            learned_preference=self.learned_preference,
@@ -292,7 +297,7 @@ class TestRec(Recommender):
                                                 num_workers=num_workers, use_prefetch_thread=thread)
 
         # Initialize training params.
-        optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
+        optimizer = optim.AdamW(self.model.parameters()) #, lr=self.learning_rate, weight_decay=self.weight_decay)
 
         if self.objective == 'ranking':
             metrics = [cornac.metrics.NDCG(), cornac.metrics.AUC()]

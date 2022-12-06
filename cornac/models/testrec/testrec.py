@@ -7,17 +7,19 @@ from cornac.models.hear.dgl_utils import HearReviewDataset, HearReviewSampler, H
 
 
 class HypergraphLayer(nn.Module):
-    def __init__(self, in_dim, out_dim):
+    def __init__(self, in_dim, out_dim, n_sentiments):
         super().__init__()
         self.in_dim = in_dim
         self.out_dim = out_dim
         self.linear = nn.Linear(in_dim, out_dim)
+        self.sentiment_mapping = nn.Parameter(torch.zeros((n_sentiments, in_dim, in_dim)))
         self.activation = nn.LeakyReLU()
 
-    def message(self, lhs_field, rhs_field, out):
+    def message(self, lhs_field, edge, out):
         def func(edges):
             norm = edges.src['norm'] * edges.dst['norm'] * edges.data['norm']
-            m = edges.src[lhs_field] * norm.unsqueeze(-1)
+            m = dgl.ops.gather_mm(edges.src[lhs_field], self.sentiment_mapping,  idx_b=edges.data[edge])
+            m = self.activation(m) * norm.unsqueeze(-1)
             return {out: m}
 
         return func
@@ -26,7 +28,7 @@ class HypergraphLayer(nn.Module):
         with g.local_scope():
             g.ndata['h'] = x
 
-            g.update_all(self.message('h', 'h', 'm'), dgl.function.sum('m', 'h'))
+            g.update_all(self.message('h', 'sid', 'm'), dgl.function.sum('m', 'h'))
 
             return self.activation(self.linear(dgl.mean_nodes(g, 'h')))
 
@@ -196,7 +198,7 @@ class HEARConv(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, n_nodes, n_relations, dst_ntypes, aggregator, predictor, node_dim, review_dim, final_dim, num_heads,
+    def __init__(self, n_nodes, n_relations, n_sentiments, dst_ntypes, aggregator, predictor, node_dim, review_dim, final_dim, num_heads,
                  layer_dropout, attention_dropout, learned_node_embeddings=None, learned_preference=False,
                  learned_embeddings=False):
         super().__init__()
@@ -221,7 +223,7 @@ class Model(nn.Module):
         self.review_conv = nn.ModuleDict()
         self.review_agg = nn.ModuleDict()
         for nt in dst_ntypes:
-            self.review_conv[nt] = HypergraphLayer(node_dim, review_dim)
+            self.review_conv[nt] = HypergraphLayer(node_dim, review_dim, n_sentiments)
             self.review_agg[nt] = HEARConv(aggregator, n_nodes, n_relations, review_dim, final_dim, num_heads,
                                        feat_drop=layer_dropout[1], attn_drop=attention_dropout)
 
