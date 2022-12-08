@@ -10,11 +10,13 @@ from cornac.models.hear.dgl_utils import HearReviewDataset, HearReviewSampler, H
 
 
 class HypergraphLayer(nn.Module):
-    def __init__(self, in_dim, out_dim, non_linear=True):
+    def __init__(self, in_dim, out_dim, non_linear=True, op='max', num_layers=1):
         super().__init__()
+        self.num_layers = num_layers
         self.in_dim = in_dim
         self.out_dim = out_dim
         self.non_linear = non_linear
+        self.op = op
         self.linear = nn.Linear(in_dim, out_dim)
         self.activation = nn.LeakyReLU()
 
@@ -29,10 +31,13 @@ class HypergraphLayer(nn.Module):
     def forward(self, g: dgl.DGLGraph, x):
         with g.local_scope():
             g.ndata['h'] = x
+            out = [dgl.readout_nodes(g, 'h', op=self.op)]
+            for _ in range(self.num_layers):
+                g.update_all(self.message('h', 'h', 'm'), fn.sum('m', 'h'))
+                out.append(dgl.readout_nodes(g, 'h', op=self.op))
 
-            g.update_all(self.message('h', 'h', 'm'), fn.sum('m', 'h'))
+            out = torch.stack(out).mean(0)
 
-            out = dgl.mean_nodes(g, 'h')
             if self.non_linear:
                 out = self.activation(self.linear(out))
 
@@ -225,7 +230,7 @@ class Model(nn.Module):
                     nn.LeakyReLU()
             )
 
-        self.review_conv = HypergraphLayer(node_dim, review_dim, non_linear=True)
+        self.review_conv = HypergraphLayer(node_dim, review_dim, non_linear=False, num_layers=4)
         self.review_agg = HEARConv(aggregator, n_nodes, n_relations, review_dim, final_dim, num_heads,
                                    feat_drop=layer_dropout[1], attn_drop=attention_dropout)
 
@@ -250,6 +255,7 @@ class Model(nn.Module):
                     nn.Linear(final_dim, final_dim),
                     nn.LeakyReLU()
                 )
+                final_dim = (node_dim + final_dim) * 2
             self.w_1 = nn.Linear(final_dim, 1, bias=False)
             self.bias = nn.Parameter(torch.FloatTensor(n_nodes))
 
@@ -258,6 +264,7 @@ class Model(nn.Module):
         self.bpr_loss_fn = nn.Softplus()
         self.review_embs = None
         self.inf_emb = None
+        self.first = True
 
     def reset_parameters(self):
         for name, parameter in self.named_parameters():
@@ -296,6 +303,19 @@ class Model(nn.Module):
 
         return x
 
+    def l2_loss(self, pos, neg, emb):
+        loss = 0
+        src, dst_i = pos.edges()
+        _, dst_j = neg.edges()
+
+        s_emb, i_emb, j_emb = emb[src], emb[dst_i], emb[dst_j]
+
+        loss += s_emb.norm(2).pow(2) + i_emb.norm(2).pow(2) + j_emb.norm(2).pow(2)
+
+        loss = 0.5 * loss / pos.num_src_nodes()
+
+        return loss
+
     def _trans_r_plausibility(self, rhs_field, lhs_field, edge, out):
         def func(edges):
             src = torch.tanh_(dgl.ops.gather_mm(edges.src[rhs_field], self.transr_src, idx_b=edges.data[edge]))
@@ -319,8 +339,8 @@ class Model(nn.Module):
         x = self.review_agg(blocks[1], x)
         x = x.sum(1)
 
-        if self.aggregator.startswith('narre'):
-            x = self.w_0(x)
+        # if self.aggregator.startswith('narre'):
+        #     x = self.w_0(x)
 
         return x
 
@@ -362,8 +382,24 @@ class Model(nn.Module):
             g.apply_edges(fn.u_add_v('b', 'b', 'b'))
 
             out = g.edata['m']
+            # out += g.edata['b'].unsqueeze(-1)
+
+            return out #+ g.edata['b'].unsqueeze(-1)
+
+    def _graph_predict_narre3(self, g: dgl.DGLGraph, x, use_preference):
+        with g.local_scope():
+            if hasattr(self, 'node_preference'):
+                np = self.node_preference(g.ndata[dgl.NID])
+            else:
+                np = self.learned_node_embeddings[g.ndata[dgl.NID]]
             if use_preference:
-                out += g.edata['b'].unsqueeze(-1)
+                g.ndata['h'] = torch.cat([x, np], dim=-1)
+                u, v = g.edges()
+                out = self.w_1(torch.cat([g.ndata['h'][u], g.ndata['h'][v]], dim=-1))
+            else:
+                g.ndata['h'] = x
+                g.apply_edges(fn.u_dot_v('h', 'h', 'm'))
+                out = g.edata['m']
 
             return out #+ g.edata['b'].unsqueeze(-1)
 
@@ -382,8 +418,8 @@ class Model(nn.Module):
         x = self.review_agg(g, x)
         x = x.sum(1)
 
-        if self.aggregator.startswith('narre'):
-            x = self.w_0(x)
+        # if self.aggregator.startswith('narre'):
+        #     x = self.w_0(x)
 
         return x
 
@@ -411,17 +447,47 @@ class Model(nn.Module):
             np_i = self.learned_node_embeddings[item]
 
         if use_preference:
-            u = torch.cat([u_emb, np_u], dim=-1)
-            i = torch.cat([i_emb, np_i], dim=-1)
+            if not self.first:
+                u = torch.cat([u_emb, np_u], dim=-1)
+                i = torch.cat([i_emb, np_i], dim=-1)
+            else:
+                u = np_u
+                i = np_i
+                self.first = False
         else:
             u = u_emb
             i = i_emb
 
         h = (u * i).sum(-1)
+        # h += (self.bias[user] + self.bias[item])
+
+        return h.reshape(-1, 1) #+ (self.bias[user] + self.bias[item]).reshape(-1, 1)
+
+    def _predict_narre3(self, user, item, u_emb, i_emb, use_preference=False):
+        if hasattr(self, 'node_preference'):
+            np_u = self.node_preference(user)
+            np_i = self.node_preference(item)
+        else:
+            np_u = self.learned_node_embeddings[user]
+            np_i = self.learned_node_embeddings[item]
 
         if use_preference:
-            h += (self.bias[user] + self.bias[item])
-        return h.reshape(-1, 1) #+ (self.bias[user] + self.bias[item]).reshape(-1, 1)
+            if not self.first:
+                u = torch.cat([u_emb, np_u], dim=-1)
+                i = torch.cat([i_emb, np_i], dim=-1)
+                u = torch.repeat_interleave(u, output_size=i.shape)
+                h = self.w_1(torch.cat([u, i]))
+            else:
+                u = np_u
+                i = np_i
+                h = (u * i).sum(-1)
+                self.first = False
+        else:
+            u = u_emb
+            i = i_emb
+            h = (u * i).sum(-1)
+
+        return h.reshape(-1, 1)
 
     def predict(self, user, item, use_preference=False):
         u_emb, i_emb = self.inf_emb[user], self.inf_emb[item]
@@ -487,7 +553,7 @@ class Model(nn.Module):
         dataloader = dgl.dataloading.DataLoader(node_review_graph, indices, sampler, batch_size=1024, shuffle=False,
                                                 drop_last=False, device=device)
 
-        self.inf_emb = torch.zeros((torch.max(indices['node'])+1, self.review_agg._out_feats)).to(device)
+        self.inf_emb = torch.zeros((torch.max(indices['node'])+1, self.node_dim)).to(device)
 
         # Node inference
         for input_nodes, output_nodes, blocks in dataloader:

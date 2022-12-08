@@ -1,4 +1,6 @@
+import json
 import os
+import pickle
 from collections import defaultdict, Counter
 from copy import deepcopy
 from math import sqrt
@@ -18,6 +20,7 @@ class HEAR(Recommender):
                  early_stopping=10,
                  learning_rate=0.1,
                  weight_decay=0,
+                 l2_weight=0.,
                  node_dim=64,
                  review_dim=32,
                  final_dim=16,
@@ -42,8 +45,10 @@ class HEAR(Recommender):
                  index=0,
                  use_tensorboard=True,
                  out_path=None,
-                 debug=False
+                 debug=False,
+                 use_transr=True
                  ):
+        self.l2_weight = l2_weight
         from torch.utils.tensorboard import SummaryWriter
 
         super().__init__(name)
@@ -82,9 +87,10 @@ class HEAR(Recommender):
         self.neg_weight = neg_weight
         self.layer_dropout = layer_dropout
         self.attention_dropout = attention_dropout
+        self.use_transr = use_transr
         parameter_list = ['batch_size', 'learning_rate', 'weight_decay', 'node_dim', 'review_dim',
                           'final_dim', 'num_heads', 'fanout', 'model_selection', 'review_aggregator',
-                          'predictor', 'layer_dropout', 'attention_dropout']
+                          'predictor', 'layer_dropout', 'attention_dropout', 'use_transr']
         self.parameters = {k: self.__getattribute__(k) for k in parameter_list}
 
         # Method
@@ -324,7 +330,7 @@ class HEAR(Recommender):
         tr_optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
 
         if self.objective == 'ranking':
-            metrics = [cornac.metrics.NDCG(), cornac.metrics.AUC()]
+            metrics = [cornac.metrics.NDCG(), cornac.metrics.AUC(), cornac.metrics.MAP(), cornac.metrics.MRR()]
         else:
             metrics = [cornac.metrics.MSE()]
 
@@ -341,51 +347,51 @@ class HEAR(Recommender):
             tot_losses = defaultdict(int)
             cur_losses = {}
             self.model.train()
+            if self.use_transr and not self.plateaued:
+                with tqdm(tr_dataloader, disable=not self.verbose) as progress:
+                    for i, (input_nodes, edge_subgraph, neg_subgraph, blocks) in enumerate(progress, 1):
+                        x = self.model.get_initial_embedings(input_nodes)
+                        x = self.model.trans_r_forward(blocks, x)
 
-            with tqdm(tr_dataloader, disable=not self.verbose) as progress:
-                for i, (input_nodes, edge_subgraph, neg_subgraph, blocks) in enumerate(progress, 1):
-                    x = self.model.get_initial_embedings(input_nodes)
-                    x = self.model.trans_r_forward(blocks, x)
+                        neg_subgraph.edata['sent'] = edge_subgraph.edata['sent']
 
-                    neg_subgraph.edata['sent'] = edge_subgraph.edata['sent']
+                        pred = self.model.trans_r_pred(edge_subgraph, x)
+                        pred_j = self.model.trans_r_pred(neg_subgraph, x)
+                        acc = (pred < pred_j).sum() / pred_j.shape.numel()
 
-                    pred = self.model.trans_r_pred(edge_subgraph, x)
-                    pred_j = self.model.trans_r_pred(neg_subgraph, x)
-                    acc = (pred < pred_j).sum() / pred_j.shape.numel()
+                        # Reverse of CF, as we want to minimize the distance.
+                        loss = self.model.ranking_loss(pred_j, pred, 'bpr')
 
-                    # Reverse of CF, as we want to minimize the distance.
-                    loss = self.model.ranking_loss(pred_j, pred, 'bpr')
+                        loss.backward()
+                        tr_optimizer.step()
+                        tr_optimizer.zero_grad()
 
-                    loss.backward()
-                    tr_optimizer.step()
-                    tr_optimizer.zero_grad()
-
-                    cur_losses['loss'] = loss.detach()
-                    cur_losses['acc'] = acc.detach()
-                    for k, v in cur_losses.items():
-                        tot_losses[k] += v
-
-                    if self.summary_writer is not None:
+                        cur_losses['loss'] = loss.detach()
+                        cur_losses['acc'] = acc.detach()
                         for k, v in cur_losses.items():
-                            self.summary_writer.add_scalar(f'train/tr/{k}', v, e * tr_length + i)
-
-                    loss_str = ','.join([f'{k}:{v/i:.3f}' for k, v in tot_losses.items()])
-                    if i != tr_length or val_set is None:
-                        progress.set_description(f'Epoch {e}, ' + loss_str)
-                    else:
-                        results = self._validate(val_set, metrics)
-                        res_str = 'Val: ' + ', '.join([f'{m.name}:{r:.4f}' for m, r in zip(metrics, results)])
-                        progress.set_description(f'Epoch {e}, {loss_str}, ' + res_str)
+                            tot_losses[k] += v
 
                         if self.summary_writer is not None:
-                            for m, r in zip(metrics, results):
-                                self.summary_writer.add_scalar(f'val/tr/{m.name}', r, e)
+                            for k, v in cur_losses.items():
+                                self.summary_writer.add_scalar(f'train/tr/{k}', v, e * tr_length + i)
 
-                        if self.model_selection == 'best' and (results[0] > best_score if metrics[0].higher_better
-                                    else results[0] < best_score):
-                                best_state = deepcopy(self.model.state_dict())
-                                best_score = results[0]
-                                best_epoch = e
+                        loss_str = ','.join([f'{k}:{v/i:.3f}' for k, v in tot_losses.items()])
+                        if i != tr_length or val_set is None:
+                            progress.set_description(f'Epoch {e}, ' + loss_str)
+                        else:
+                            results = self._validate(val_set, metrics)
+                            res_str = 'Val: ' + ', '.join([f'{m.name}:{r:.4f}' for m, r in zip(metrics, results)])
+                            progress.set_description(f'Epoch {e}, {loss_str}, ' + res_str)
+
+                            if self.summary_writer is not None:
+                                for m, r in zip(metrics, results):
+                                    self.summary_writer.add_scalar(f'val/tr/{m.name}', r, e)
+
+                            if self.model_selection == 'best' and (results[0] > best_score if metrics[0].higher_better
+                                        else results[0] < best_score):
+                                    best_state = deepcopy(self.model.state_dict())
+                                    best_score = results[0]
+                                    best_epoch = e
 
             tot_losses = defaultdict(int)
             cur_losses = {}
@@ -408,6 +414,11 @@ class HEAR(Recommender):
                         loss = self.model.ranking_loss(pred, pred_j, self.ranking_loss, self.neg_weight, self.margin)
                         cur_losses['loss'] = loss.detach()
                         cur_losses['acc'] = acc.detach()
+
+                        if self.l2_weight:
+                            l2 = self.model.l2_loss(edge_subgraph, neg_subgraph, x)
+                            loss += self.l2_weight * l2
+                            cur_losses['l2'] = l2.detach()
                     else:
                         loss = self.model.rating_loss(pred, edge_subgraph.edata['label'])
                         cur_losses['loss'] = loss.detach()
@@ -445,19 +456,34 @@ class HEAR(Recommender):
                             best_epoch = e
 
             if self.early_stopping is not None and (e - best_epoch) >= self.early_stopping:
-                if self.plateaued:
+                if True or self.plateaued:
                     break
                 else:
                     print(f'Plateaued, using adding learned preference.')
-                    self.plateaued = True
+                    self.model.eval()
+                    with torch.no_grad():
+                        self.model.load_state_dict(best_state)
+                        self.model.inference(self.review_graphs, self.node_review_graph, self.device)
+                        from cornac.eval_methods import ranking_eval
+                        user_c = {int(k): int(v) for k, v in Counter(self.train_set.matrix.nonzero()[0]).items()}
+                        (_, u_score1) = ranking_eval(self, metrics, self.train_set, val_set)
+                        self.plateaued = True
+                        (_, u_score2) = ranking_eval(self, metrics, self.train_set, val_set)
+                        u_score1, u_score2 = [[{int(k): float(v) for k, v in d.items()} for d in l] for l in [u_score1, u_score2]]
+
+                    with open(os.path.join(self.summary_writer.log_dir, 'scores.pickle'), 'wb') as f:
+                        pickle.dump({'uc': user_c, 'us1': u_score1[0], 'us2': u_score2[0],
+                                     'ratings': self.train_set.matrix}, f)
+
+
                     best_epoch = e  # reset best state
                     if self.model_selection == 'best':
                         print('Using best state for fine tuning.')
-                        self.model.load_state_dict(best_state)
                         results = self._validate(val_set, metrics)
                         best_score = results[0]
                         print(f'Best score with preference: {best_score}')
-                        # optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
+                        # parameters = [p for n, p in self.model.named_parameters() if n.startswith('w_1')]
+                        # optimizer = optim.Adam(parameters, lr=self.learning_rate, weight_decay=self.weight_decay)
                         # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max' if metrics[0].higher_better else 'min',
                         #                    patience=patience)
 
