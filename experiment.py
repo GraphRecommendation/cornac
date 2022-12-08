@@ -31,7 +31,7 @@ def run(in_kwargs, dataset, method, save_dir='.'):
     user_based = in_kwargs.pop('user_based', True)
     objective = in_kwargs['objective'] = in_kwargs.get('objective', 'ranking')  # Ranking is default
 
-    if method in ['hear', 'testrec']:
+    if method in ['hear', 'testrec', 'lighthear']:
         default_kwargs = {
             'use_cuda': True,
             'use_uva': False,
@@ -57,6 +57,8 @@ def run(in_kwargs, dataset, method, save_dir='.'):
         }
         if method == 'hear':
             model = cornac.models.HEAR
+        elif method == 'lighthear':
+            model = cornac.models.LightHEAR
         else:
             model = cornac.models.TestRec
         # Same dropout

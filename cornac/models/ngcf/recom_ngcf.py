@@ -87,15 +87,16 @@ class NGCF(Recommender):
         assert use_uva == use_cuda or not use_uva, 'use_cuda must be true when using uva.'
         assert objective == 'ranking' or objective == 'rating', f'This method only supports ranking or rating, ' \
 
-    def _construct_graph(self, self_loop, norm='both'):
+    @staticmethod
+    def construct_graph(train_set, self_loop, norm='both'):
         import dgl
         user_ntype = 'user'
         item_ntype = 'item'
 
         # Get user-item edges while changing user indices.
-        users = torch.arange(self.train_set.matrix.shape[0], dtype=torch.int64)
-        items = torch.arange(self.train_set.matrix.shape[1], dtype=torch.int64)
-        u, i = self.train_set.matrix.nonzero()
+        users = torch.arange(train_set.matrix.shape[0], dtype=torch.int64)
+        items = torch.arange(train_set.matrix.shape[1], dtype=torch.int64)
+        u, i = train_set.matrix.nonzero()
         ui = u, i
         iu = i, u
 
@@ -137,7 +138,7 @@ class NGCF(Recommender):
         u, v = train_set.matrix.nonzero()
         u, v = torch.LongTensor(u), torch.LongTensor(v)
 
-        self.train_graph = self._construct_graph(not self.lightgcn)
+        self.train_graph = self.construct_graph(train_set, not self.lightgcn)
 
         # create model
         self.model = Model(self.train_graph, self.node_dim, self.layer_dims, self.layer_dropout,
