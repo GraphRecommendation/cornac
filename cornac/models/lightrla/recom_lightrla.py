@@ -12,8 +12,8 @@ from ..recommender import Recommender
 from ...data import Dataset
 
 
-class LightHEAR(Recommender):
-    def __init__(self, name='HEAR', use_cuda=False, use_uva=False, stemming=True,
+class LightRLA(Recommender):
+    def __init__(self, name='LightRLA', use_cuda=False, use_uva=False, stemming=True,
                  batch_size=128,
                  num_workers=0,
                  num_epochs=10,
@@ -242,7 +242,7 @@ class LightHEAR(Recommender):
         return n_nodes
 
     def fit(self, train_set: Dataset, val_set=None):
-        from .hear import Model
+        from .lightrla import Model
         from cornac.models import NGCF
 
         super().fit(train_set, val_set)

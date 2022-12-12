@@ -13,4 +13,4 @@
 # limitations under the License.
 # ============================================================================
 
-from .recom_hear import LightHEAR
+from .recom_lightrla import LightRLA
