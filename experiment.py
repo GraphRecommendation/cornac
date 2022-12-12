@@ -16,6 +16,7 @@ import argparse
 import inspect
 import pickle
 
+import cornac as cornac
 import torch
 
 from cornac.datasets import amazon_cellphone_seer, amazon_computer_seer
@@ -158,6 +159,7 @@ def run(in_kwargs, dataset, method, save_dir='.'):
         else:
             model = NARRE
     elif method == 'bpr':
+        from cornac.models import BPR
         default_kwargs = {
             'k': 16,
             'max_iter': 100,
@@ -165,7 +167,7 @@ def run(in_kwargs, dataset, method, save_dir='.'):
             'lambda_reg': 0.01,
             'use_bias': True
         }
-        model = cornac.models.BPR
+        model = BPR
     elif method in ['ngcf', 'lightgcn']:
         default_kwargs = {
             'use_cuda': True,
@@ -189,7 +191,8 @@ def run(in_kwargs, dataset, method, save_dir='.'):
         if method == 'lightgcn':
             default_kwargs['layer_dims'] = [64, 64, 64]
 
-        model = cornac.models.NGCF
+        from cornac.models import NGCF
+        model = NGCF
     # elif method == 'lightrla':
     #     default_kwargs = {
     #         'use_cuda': True,
@@ -252,6 +255,7 @@ def run(in_kwargs, dataset, method, save_dir='.'):
 
     model = model(**default_kwargs)
 
+    import cornac
     if objective == 'ranking':
         metrics = [cornac.metrics.NDCG(), cornac.metrics.AUC()]
     elif objective == 'rating':

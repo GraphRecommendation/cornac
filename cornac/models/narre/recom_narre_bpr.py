@@ -15,8 +15,6 @@
 
 import os
 
-import keras
-import numpy as np
 from tqdm.auto import trange
 
 from ..recommender import Recommender
