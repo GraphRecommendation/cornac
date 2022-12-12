@@ -8,5 +8,6 @@ pandas==1.5.1
 scipy==1.9.3
 tqdm==4.64.1
 powerlaw==1.5
+nltk==3.7
 dgl-cu116==0.9.1
 torch==1.12.1+cu116

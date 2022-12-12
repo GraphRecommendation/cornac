@@ -18,7 +18,6 @@ import pickle
 
 import torch
 
-import cornac
 from cornac.datasets import amazon_cellphone_seer, amazon_computer_seer
 from cornac.eval_methods import StratifiedSplit
 from cornac.data import ReviewModality, SentimentModality, Reader
@@ -56,11 +55,14 @@ def run(in_kwargs, dataset, method, save_dir='.'):
             'verbose': True
         }
         if method == 'hear':
-            model = cornac.models.HEAR
+            from cornac.models import HEAR
+            model = HEAR
         elif method == 'lightrla':
-            model = cornac.models.LightRLA
+            from cornac.models import LightRLA
+            model = LightRLA
         else:
-            model = cornac.models.TestRec
+            from cornac.models import TestRec
+            model = TestRec
         # Same dropout
         if 'dropout' in in_kwargs:
             in_kwargs['layer_dropout'] = in_kwargs['dropout']
@@ -95,11 +97,12 @@ def run(in_kwargs, dataset, method, save_dir='.'):
             'out_path': save_dir,
             'verbose': True
         }
-        model = cornac.models.KGAT
+        from cornac.models import KGAT
+        model = KGAT
         if 'dropout' in in_kwargs:
             in_kwargs['layer_dropouts'] = in_kwargs['dropout']
             in_kwargs['edge_dropouts'] = in_kwargs['dropout']
-    elif method in ['hagerec', 'testrec']:
+    elif method in ['hagerec']:
         default_kwargs = {
             'use_cuda': True,
             'use_uva': False,
@@ -119,16 +122,19 @@ def run(in_kwargs, dataset, method, save_dir='.'):
             'out_path': save_dir,
             'verbose': True
         }
-        model = cornac.models.HAGERec
+        from cornac.models import HAGERec
+        model = HAGERec
         if 'dropout' in in_kwargs:
             in_kwargs['layer_dropout'] = in_kwargs['dropout']
             in_kwargs['edge_dropout'] = in_kwargs['dropout']
     elif method == 'trirank':
         default_kwargs = {}
-        model = cornac.models.TriRank
+        from cornac.models import TriRank
+        model = TriRank
     elif method == 'most-pop':
         default_kwargs = {}
-        model = cornac.models.MostPop
+        from cornac.models import MostPop
+        model = MostPop
     elif method == 'narre':
         default_kwargs = {
             'embedding_size': 100,
@@ -146,10 +152,11 @@ def run(in_kwargs, dataset, method, save_dir='.'):
             'seed': 42,
             'max_num_review': 50
         }
+        from cornac.models import NARRE, NARRE_BPR
         if in_kwargs.get('use_bpr', False):
-            model = cornac.models.NARRE_BPR
+            model = NARRE_BPR
         else:
-            model = cornac.models.NARRE
+            model = NARRE
     elif method == 'bpr':
         default_kwargs = {
             'k': 16,
