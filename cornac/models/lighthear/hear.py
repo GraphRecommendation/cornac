@@ -263,12 +263,22 @@ class Model(nn.Module):
                 final_dim = (node_dim + final_dim) * 2
             self.w_1 = nn.Linear(final_dim, 1, bias=False)
             self.bias = nn.Parameter(torch.FloatTensor(n_nodes))
+        elif predictor == 'bi-interaction':
+            self.add_mlp = nn.Sequential(
+                nn.Linear(final_dim, final_dim),
+                nn.Tanh()
+            )
+            self.mul_mlp = nn.Sequential(
+                nn.Linear(final_dim, final_dim),
+                nn.Tanh()
+            )
 
         self.rating_loss_fn = nn.MSELoss(reduction='mean')
         self.ccl_loss_fn = nn.ReLU()
         self.bpr_loss_fn = nn.Softplus()
         self.review_embs = None
         self.inf_emb = None
+        self.lemb = None
         self.first = True
 
     def reset_parameters(self):
@@ -285,6 +295,8 @@ class Model(nn.Module):
             return self.node_embedding_mlp(self.learned_node_embeddings[nodes])
 
     def l2_loss(self, pos, neg, emb):
+        emb = emb[0] * emb[1]
+
         loss = 0
         src, dst_i = pos.edges()
         _, dst_j = neg.edges()
@@ -298,18 +310,22 @@ class Model(nn.Module):
         return loss
 
     def forward(self, blocks, x):
-        lgcn_blocks = blocks[1]
-        lx = self.lightgcn(lgcn_blocks[0].ndata[dgl.NID], lgcn_blocks)
-        lx = torch.cat([lx['item'], lx['user']], dim=0)
+        blocks, lgcn_blocks = blocks
+        lx = self.lightgcn(lgcn_blocks[0].ndata[dgl.NID], lgcn_blocks[:-1])
+        g = lgcn_blocks[-1]
+        with g.local_scope():
+            g.srcdata['h'] = lx
+            funcs ={etype: (fn.copy_u('h', 'm'), fn.sum('m', 'h')) for etype in g.etypes}
+            g.multi_update_all(funcs, 'sum')
+            lx = g.dstdata['h']['node']
 
-        blocks = blocks[0]
         x = self.node_dropout(x)
         x = self.review_conv(blocks[0], x)
 
         x = self.review_agg(blocks[1], x)
         x = x.sum(1)
 
-        x = torch.cat([x, lx], dim=1)
+        x = [x, lx]
 
         return x
 
@@ -342,10 +358,15 @@ class Model(nn.Module):
                 np = self.node_preference(g.ndata[dgl.NID])
             else:
                 np = self.learned_node_embeddings[g.ndata[dgl.NID]]
+
+            x = [self.node_dropout(e) for e in x]
+
             if use_preference:
-                g.ndata['h'] = torch.cat([x, np], dim=-1)
+                g.ndata['h'] = x * np # torch.cat([x, np], dim=-1)
             else:
-                g.ndata['h'] = x
+                # g.ndata['h'] = torch.cat([x[0], x[1]], dim=-1)
+                g.ndata['h'] = x[0] * x[1]
+                # g.ndata['h'] = x[1]
             g.ndata['b'] = self.bias[g.ndata[dgl.NID]]
             g.apply_edges(fn.u_dot_v('h', 'h', 'm'))
             g.apply_edges(fn.u_add_v('b', 'b', 'b'))
@@ -372,11 +393,24 @@ class Model(nn.Module):
 
             return out #+ g.edata['b'].unsqueeze(-1)
 
+    def _graph_bi_interaction(self, g: dgl.DGLGraph, x):
+        x, lx = x
+        with g.local_scope():
+            a = self.add_mlp(x + lx)
+            m = self.mul_mlp(x * lx)
+            x = a + m
+            u, v = g.edges()
+            pred = self._predict_dot(x[u], x[v])
+
+            return pred
+
     def graph_predict(self, g: dgl.DGLGraph, x, use_preference=False):
         if self.predictor == 'dot':
             return self._graph_predict_dot(g, x)
         elif self.predictor == 'narre':
-            return self._graph_predict_narre2(g, x, use_preference)
+            return self._graph_predict_narre2(g, x, False)
+        elif self.predictor == 'bi-interaction':
+            return self._graph_bi_interaction(g, x)
         else:
             raise ValueError(f'Predictor not implemented for "{self.predictor}".')
 
@@ -416,16 +450,15 @@ class Model(nn.Module):
             np_i = self.learned_node_embeddings[item]
 
         if use_preference:
-            if not self.first:
-                u = torch.cat([u_emb, np_u], dim=-1)
-                i = torch.cat([i_emb, np_i], dim=-1)
-            else:
-                u = np_u
-                i = np_i
-                self.first = False
+            u = u_emb * np_u #torch.cat([u_emb, np_u], dim=-1)
+            i = i_emb * np_i #torch.cat([i_emb, np_i], dim=-1)
         else:
-            u = u_emb
-            i = i_emb
+            lu_emb, li_emb = self.lemb[user], self.lemb[item]
+            # u = torch.cat([u_emb, lu_emb], dim=-1) # u_emb * lu_emb
+            # i = torch.cat([i_emb, li_emb], dim=-1) #i_emb * li_emb
+            u = u_emb * lu_emb
+            i = i_emb * li_emb
+            # u,i = lu_emb, li_emb
 
         h = (u * i).sum(-1)
         # h += (self.bias[user] + self.bias[item])
@@ -458,6 +491,13 @@ class Model(nn.Module):
 
         return h.reshape(-1, 1)
 
+    def _predict_bi_interaction(self, user, item, u_emb, i_emb):
+        lu_emb, li_emb = self.lemb[user], self.lemb[item]
+        u_emb = self.add_mlp(u_emb + lu_emb) + self.mul_mlp(u_emb * lu_emb)
+        i_emb = self.add_mlp(i_emb + li_emb) + self.mul_mlp(i_emb * li_emb)
+        pred = self._predict_dot(u_emb, i_emb)
+        return pred
+
     def predict(self, user, item, use_preference=False):
         u_emb, i_emb = self.inf_emb[user], self.inf_emb[item]
         # u_emb, i_emb = self.learned_node_embeddings[user], self.learned_node_embeddings[item]
@@ -465,7 +505,7 @@ class Model(nn.Module):
         if self.predictor == 'dot':
             pred = self._predict_dot(u_emb, i_emb)
         elif self.predictor == 'narre':
-            pred = self._predict_narre2(user, item, u_emb, i_emb, use_preference)
+            pred = self._predict_narre2(user, item, u_emb, i_emb, False)
         else:
             raise ValueError(f'Predictor not implemented for "{self.predictor}".')
 
@@ -532,6 +572,8 @@ class Model(nn.Module):
         self.lightgcn.inference(ui_graph, batch_size)
         x = self.lightgcn.embeddings
         x = torch.cat([x['item'], x['user']], dim=0)
-        self.inf_emb = torch.cat([self.inf_emb, x], dim=1)
+        self.lemb = x
+
+
 
 

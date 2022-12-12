@@ -124,7 +124,7 @@ class LightHEAR(Recommender):
         assert not (self.learned_preference or self.learned_embeddings) or self.learned_node_embeddings is not None, \
             'If using learned preference or learned embeddings, then learned node embeddings must be passed as' \
             'an argument.'
-        assert self.learned_preference != (self.preference_module is not None), \
+        assert (self.preference_module is None) ** self.learned_preference, \
             'Cannot use both learned preference embeddings and use another preference module.'
 
     def _create_graphs(self, train_set: Dataset):
@@ -310,7 +310,7 @@ class LightHEAR(Recommender):
         sampler = dgl_utils.HearBlockSampler(self.node_review_graph, self.review_graphs, self.review_aggregator,
                                              self.ui_graph, fanout=self.fanout)
         if self.objective == 'ranking':
-            neg_sampler = cornac.utils.dgl.UniformItemSampler(self.num_neg_samples, self.train_set.num_items)
+            neg_sampler = cornac.utils.dgl.GlobalUniformItemSampler(self.num_neg_samples, self.train_set.num_items)
         else:
             neg_sampler = None
 
@@ -320,7 +320,7 @@ class LightHEAR(Recommender):
                                                 num_workers=num_workers, use_prefetch_thread=thread)
 
         # Initialize training params.
-        optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
+        optimizer = optim.AdamW(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
 
         if self.objective == 'ranking':
             metrics = [cornac.metrics.NDCG(), cornac.metrics.AUC(), cornac.metrics.MAP(), cornac.metrics.MRR()]
@@ -432,9 +432,8 @@ class LightHEAR(Recommender):
                         #                    patience=patience)
 
         del self.node_filter
-        del g, eids, rui
+        del g, eids
         del dataloader
-        del tr_dataloader
         del sampler
 
         if best_state is not None:

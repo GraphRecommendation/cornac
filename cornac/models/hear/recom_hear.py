@@ -119,11 +119,11 @@ class HEAR(Recommender):
         assert use_uva == use_cuda or not use_uva, 'use_cuda must be true when using uva.'
         assert objective == 'ranking' or objective == 'rating', f'This method only supports ranking or rating, ' \
                                                                 f'not {objective}.'
-        assert ranking_loss == 'bpr' or ranking_loss == 'ccl', f'Only bpr and ccl are supported not {ranking_loss}.'
+        assert ranking_loss in ['bpr', 'ccl', 'dcl'], f'Only bpr and ccl are supported not {ranking_loss}.'
         assert not (self.learned_preference or self.learned_embeddings) or self.learned_node_embeddings is not None, \
             'If using learned preference or learned embeddings, then learned node embeddings must be passed as' \
             'an argument.'
-        assert self.learned_preference != (self.preference_module is not None), \
+        assert (self.preference_module is None) ** self.learned_preference, \
             'Cannot use both learned preference embeddings and use another preference module.'
 
     def _create_graphs(self, train_set: Dataset):
@@ -306,7 +306,7 @@ class HEAR(Recommender):
         # Create sampler
         sampler = dgl_utils.HearBlockSampler(self.node_review_graph, self.review_graphs, self.review_aggregator, fanout=self.fanout)
         if self.objective == 'ranking':
-            neg_sampler = cornac.utils.dgl.UniformItemSampler(self.num_neg_samples, self.train_set.num_items)
+            neg_sampler = cornac.utils.dgl.GlobalUniformItemSampler(self.num_neg_samples, self.train_set.num_items)
         else:
             neg_sampler = None
 
@@ -347,7 +347,7 @@ class HEAR(Recommender):
             tot_losses = defaultdict(int)
             cur_losses = {}
             self.model.train()
-            if self.use_transr and not self.plateaued:
+            if False and self.use_transr and not self.plateaued:
                 with tqdm(tr_dataloader, disable=not self.verbose) as progress:
                     for i, (input_nodes, edge_subgraph, neg_subgraph, blocks) in enumerate(progress, 1):
                         x = self.model.get_initial_embedings(input_nodes)
@@ -395,7 +395,7 @@ class HEAR(Recommender):
 
             tot_losses = defaultdict(int)
             cur_losses = {}
-
+            self.model.train()
             with tqdm(dataloader, disable=not self.verbose) as progress:
                 for i, batch in enumerate(progress, 1):
                     if self.objective == 'ranking':
@@ -406,18 +406,23 @@ class HEAR(Recommender):
                     # with torch.autocast(self.device):
                     x = self.model(blocks, self.model.get_initial_embedings(input_nodes))
 
-                    pred = self.model.graph_predict(edge_subgraph, x)
+                    pred = self.model.graph_predict(edge_subgraph, x, self.plateaued)
 
                     if self.objective == 'ranking':
-                        pred_j = self.model.graph_predict(neg_subgraph, x, self.plateaued).reshape(-1, self.num_neg_samples)
+                        pred_j = self.model.graph_predict(neg_subgraph, x, self.plateaued)
+                        pred_j = pred_j.reshape(-1, self.num_neg_samples)
                         acc = (pred > pred_j).sum() / pred_j.shape.numel()
                         loss = self.model.ranking_loss(pred, pred_j, self.ranking_loss, self.neg_weight, self.margin)
                         cur_losses['loss'] = loss.detach()
                         cur_losses['acc'] = acc.detach()
 
+                        # if c is not None:
+                        #     loss = loss + .1 * c
+                        #     cur_losses['cs'] = c.detach()
+
                         if self.l2_weight:
                             l2 = self.model.l2_loss(edge_subgraph, neg_subgraph, x)
-                            loss += self.l2_weight * l2
+                            loss = loss + self.l2_weight * l2
                             cur_losses['l2'] = l2.detach()
                     else:
                         loss = self.model.rating_loss(pred, edge_subgraph.edata['label'])
@@ -456,7 +461,7 @@ class HEAR(Recommender):
                             best_epoch = e
 
             if self.early_stopping is not None and (e - best_epoch) >= self.early_stopping:
-                if True or self.plateaued:
+                if self.plateaued:
                     break
                 else:
                     print(f'Plateaued, using adding learned preference.')
@@ -482,8 +487,8 @@ class HEAR(Recommender):
                         results = self._validate(val_set, metrics)
                         best_score = results[0]
                         print(f'Best score with preference: {best_score}')
-                        # parameters = [p for n, p in self.model.named_parameters() if n.startswith('w_1')]
-                        # optimizer = optim.Adam(parameters, lr=self.learning_rate, weight_decay=self.weight_decay)
+                        parameters = [p for n, p in self.model.named_parameters() if n.startswith('w_')]
+                        optimizer = optim.Adam(parameters, lr=self.learning_rate, weight_decay=self.weight_decay)
                         # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max' if metrics[0].higher_better else 'min',
                         #                    patience=patience)
 

@@ -70,6 +70,20 @@ class HearBlockSampler(dgl.dataloading.NeighborSampler):
         self.aggregator = aggregator
         self.ui_graph = ui_graph
         self.compact = compact
+        self.n_ui_graph = self._nu_graph()
+
+    def _nu_graph(self):
+        n_nodes = self.node_review_graph.num_nodes('node')
+        n_users = self.ui_graph.num_nodes('user')
+        n_items = self.ui_graph.num_nodes('item')
+
+        nodes = self.node_review_graph.nodes('node')
+        data = {
+            ('user', 'un', 'node'): (torch.arange(n_users, dtype=torch.int64), nodes[nodes >= n_items]),
+            ('item', 'in', 'node'): (torch.arange(n_items, dtype=torch.int64), nodes[nodes < n_items])
+        }
+
+        return dgl.heterograph(data, num_nodes_dict={'user': n_users, 'item': n_items, 'node': n_nodes})
 
     def sample(self, g, seed_nodes, exclude_eids=None, pair_graph=None):
         # If exclude eids, find the equivalent eid of the node_review_graph.
@@ -104,17 +118,19 @@ class HearBlockSampler(dgl.dataloading.NeighborSampler):
         input_nodes = nid
 
         blocks2 = []
-        seed_nodes = output_nodes['node']
-        # split into user/item
-        n_items = self.ui_graph.num_nodes('item')
-        seed_nodes = {'user': seed_nodes[seed_nodes >= n_items] - n_items,
-                      'item': seed_nodes[seed_nodes < n_items]}
+        seed_nodes = output_nodes
 
-        for _ in range(3):
-            frontier = self.ui_graph.sample_neighbors(
-                seed_nodes, -1, edge_dir=self.edge_dir, prob=self.prob,
-                replace=self.replace, output_device=self.output_device,
-                exclude_edges=exclude_eids)
+        for i in range(4):
+            if i == 0:
+                frontier = self.n_ui_graph.sample_neighbors(
+                    seed_nodes, -1, edge_dir=self.edge_dir, prob=self.prob,
+                    replace=self.replace, output_device=self.output_device,
+                    exclude_edges=exclude_eids)
+            else:
+                frontier = self.ui_graph.sample_neighbors(
+                    seed_nodes, -1, edge_dir=self.edge_dir, prob=self.prob,
+                    replace=self.replace, output_device=self.output_device,
+                    exclude_edges=exclude_eids)
             eid = frontier.edata[dgl.EID]
             block = dgl.to_block(frontier, seed_nodes)
             block.edata[dgl.EID] = eid
