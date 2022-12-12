@@ -20,11 +20,14 @@ shared_hyperparameters = {
     'predictor': 'narre',
 }
 
-hear_hyperparameters = {
-    'review_aggregator': ['narre', 'narre-rel'],
+lightrla_hyperparameters = {
+    'review_aggregator': ['narre'],
+    'preference_module': ['narre', 'lightgcn'],
+    'predictor': ['dot', 'narre', 'bi-interaction'],
     'weight_decay': [1e-6, 1e-5, 1e-4],
     'learning_rate': [0.0001, 0.001, 0.01],
-    'dropout': np.linspace(0., 0.6, 7).round(1).tolist()
+    'dropout': np.linspace(0., 0.6, 7).round(1).tolist(),
+    'l2_weight': [1e-6, 1e-5, 1e-4, 0]
 }
 
 kgat_hyperparameters = {
@@ -69,10 +72,10 @@ def create_hyperparameter_dict(comb, model_parameters, shared_parameters):
 
 
 def run(dataset, method):
-    global shared_hyperparameters, hear_hyperparameters, GPUS
+    global shared_hyperparameters, lightrla_hyperparameters, GPUS
 
-    if method == 'hear':
-        parameters = hear_hyperparameters
+    if method == 'lightrla':
+        parameters = lightrla_hyperparameters
     elif method == 'kgat':
         parameters = kgat_hyperparameters
     else:

@@ -183,32 +183,32 @@ def run(in_kwargs, dataset, method, save_dir='.'):
             default_kwargs['layer_dims'] = [64, 64, 64]
 
         model = cornac.models.NGCF
-    elif method == 'lightrla':
-        default_kwargs = {
-            'use_cuda': True,
-            'use_uva': False,
-            'batch_size': 256,
-            'num_workers': 5,
-            'num_epochs': 10,
-            'learning_rate': 0.0001,
-            'l2_weight': 1e-5,
-            'node_dim': 64,
-            'layer_dims': [64, 64, 64],
-            'model_selection': 'best',
-            'layer_dropout': .1,
-            'user_based': user_based,
-            'debug': False,
-            'out_path': save_dir,
-            'verbose': True
-        }
-
-        model = cornac.models.LightRLA
+    # elif method == 'lightrla':
+    #     default_kwargs = {
+    #         'use_cuda': True,
+    #         'use_uva': False,
+    #         'batch_size': 256,
+    #         'num_workers': 5,
+    #         'num_epochs': 10,
+    #         'learning_rate': 0.0001,
+    #         'l2_weight': 1e-5,
+    #         'node_dim': 64,
+    #         'layer_dims': [64, 64, 64],
+    #         'model_selection': 'best',
+    #         'layer_dropout': .1,
+    #         'user_based': user_based,
+    #         'debug': False,
+    #         'out_path': save_dir,
+    #         'verbose': True
+    #     }
+    #
+    #     model = cornac.models.LightRLA
     else:
         raise NotImplementedError
 
     parameters = list(inspect.signature(model).parameters.keys())
-    in_kwargs = {k: v for k, v in in_kwargs.items() if k in parameters}  # some python args are not relevant for model
     default_kwargs.update(in_kwargs)
+    default_kwargs = {k: v for k, v in default_kwargs.items() if k in parameters}  # some python args are not relevant for model
 
     if dataset == 'cellphone':
         feedback = amazon_cellphone_seer.load_feedback(fmt="UIRT", reader=Reader())

@@ -11,20 +11,33 @@ from cornac.models.hear.dgl_utils import HearReviewDataset, HearReviewSampler, H
 
 
 class HypergraphLayer(nn.Module):
-    def __init__(self, in_dim, out_dim, non_linear=True, op='max', num_layers=1):
+    def __init__(self, in_dim, out_dim, non_linear=True, op='max', num_layers=1, n_relations=0):
         super().__init__()
         self.num_layers = num_layers
         self.in_dim = in_dim
         self.out_dim = out_dim
         self.non_linear = non_linear
         self.op = op
-        self.linear = nn.Linear(in_dim, out_dim)
+        if n_relations > 0:
+            self.relation_w_src = nn.Parameter(torch.zeros((num_layers, n_relations, in_dim, in_dim)))
+            self.relation_w_affinity = nn.Parameter(torch.zeros((num_layers, n_relations, in_dim, in_dim)))
         self.activation = nn.LeakyReLU()
 
-    def message(self, lhs_field, rhs_field, out):
+    def message(self, lhs_field, rhs_field, edge, out, layer):
         def func(edges):
             norm = edges.src['norm'] * edges.dst['norm'] * edges.data['norm']
-            m = edges.src[lhs_field] * norm.unsqueeze(-1)
+            m = edges.src[lhs_field]
+            if hasattr(self, 'relation_w_src'):
+                m1 = dgl.ops.gather_mm(m, self.relation_w_src[layer], idx_b=edges.data[edge])
+                m2 = dgl.ops.gather_mm(m * edges.dst[rhs_field], self.relation_w_affinity[layer],
+                                       idx_b=edges.data[edge])
+                m = m1 + m2
+
+            m = m * norm.unsqueeze(-1)
+
+            if self.non_linear:
+                m = self.activation(m)
+
             return {out: m}
 
         return func
@@ -33,14 +46,11 @@ class HypergraphLayer(nn.Module):
         with g.local_scope():
             g.ndata['h'] = x
             out = [dgl.readout_nodes(g, 'h', op=self.op)]
-            for _ in range(self.num_layers):
-                g.update_all(self.message('h', 'h', 'm'), fn.sum('m', 'h'))
+            for l in range(self.num_layers):
+                g.update_all(self.message('h', 'h',  'type', 'm', l), fn.sum('m', 'h'))
                 out.append(dgl.readout_nodes(g, 'h', op=self.op))
 
             out = torch.stack(out).mean(0)
-
-            if self.non_linear:
-                out = self.activation(self.linear(out))
 
             return out
 
@@ -210,83 +220,58 @@ class HEARConv(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, g, n_nodes, n_relations, n_sentiments, aggregator, predictor, node_dim, review_dim, final_dim, transr_dim, num_heads,
-                 layer_dropout, attention_dropout, learned_node_embeddings=None, learned_preference=False,
-                 learned_embeddings=False):
-        super().__init__()
-
-        self.aggregator = aggregator
-        self.predictor = predictor
-        self.node_dim = node_dim
-        self.review_dim = review_dim
-        self.final_dim = final_dim
-        self.num_heads = num_heads
-        self.learned_node_embeddings = learned_node_embeddings
-
-        if not learned_embeddings:
-            self.node_embedding = nn.Embedding(n_nodes, node_dim)
-        else:
-            self.node_embedding_mlp = nn.Sequential(
-                    nn.Linear(self.learned_node_embeddings.shape[1], node_dim),
-                    nn.LeakyReLU()
-            )
-
-        n_layers = 3
-        self.review_conv = HypergraphLayer(node_dim, review_dim, non_linear=False, num_layers=n_layers)
-        self.review_agg = HEARConv(aggregator, n_nodes, n_relations, review_dim, final_dim, num_heads,
-                                   feat_drop=layer_dropout[1], attn_drop=attention_dropout)
-
-        self.node_dropout = nn.Dropout(layer_dropout[0])
-
-        self.lightgcn = cornac.models.ngcf.ngcf.Model(g, node_dim, [node_dim]*3, dropout=layer_dropout[0],
-                                                      lightgcn=True, use_cuda=True)
-
-        self.transr_src = nn.Parameter(torch.zeros((n_sentiments, node_dim*2 + review_dim, transr_dim)))
-        self.transr_dst = nn.Parameter(torch.zeros((n_sentiments, node_dim*2, transr_dim)))
-        self.transr_rel = nn.Parameter(torch.zeros((n_sentiments, transr_dim)))
-
-        if aggregator.startswith('narre'):
-            self.w_0 = nn.Linear(review_dim, final_dim)
-
-        if predictor == 'narre':
-            if not learned_preference:
-                self.node_preference = nn.Embedding(n_nodes, final_dim)
-            else:
-                self.preference_mlp = nn.Sequential(
-                    nn.Linear(self.learned_node_embeddings.shape[1], final_dim),
-                    nn.LeakyReLU()
-                )
-                self.review_mlp = nn.Sequential(
-                    nn.Linear(final_dim, final_dim),
-                    nn.LeakyReLU()
-                )
-                final_dim = (node_dim + final_dim) * 2
-            self.w_1 = nn.Linear(final_dim, 1, bias=False)
-            self.bias = nn.Parameter(torch.FloatTensor(n_nodes))
-        elif predictor == 'bi-interaction':
-            self.add_mlp = nn.Sequential(
-                nn.Linear(final_dim, final_dim),
-                nn.Tanh()
-            )
-            self.mul_mlp = nn.Sequential(
-                nn.Linear(final_dim, final_dim),
-                nn.Tanh()
-            )
-
-        self.rating_loss_fn = nn.MSELoss(reduction='mean')
-        self.ccl_loss_fn = nn.ReLU()
-        self.bpr_loss_fn = nn.Softplus()
-        self.review_embs = None
-        self.inf_emb = None
-        self.lemb = None
-        self.first = True
-
     def reset_parameters(self):
         for name, parameter in self.named_parameters():
             if name.endswith('bias'):
                 nn.init.constant_(parameter, 0)
             else:
                 nn.init.xavier_normal_(parameter)
+
+    def __init__(self, g, n_nodes, n_hyper_graph_types, n_lgcn_relations, aggregator, predictor, node_dim,
+                 num_heads, layer_dropout, attention_dropout, narre_preference='lightgcn'):
+        super().__init__()
+
+        self.aggregator = aggregator
+        self.predictor = predictor
+        self.narre_preference = narre_preference
+        self.node_dim = node_dim
+        self.num_heads = num_heads
+
+        self.node_embedding = nn.Embedding(n_nodes, node_dim)
+
+        n_layers = 3
+        self.review_conv = HypergraphLayer(node_dim, node_dim, non_linear=False, num_layers=n_layers,
+                                           n_relations=n_hyper_graph_types)
+        self.review_agg = HEARConv(aggregator, n_nodes, n_lgcn_relations, node_dim, node_dim, num_heads,
+                                   feat_drop=layer_dropout[1], attn_drop=attention_dropout)
+
+        self.node_dropout = nn.Dropout(layer_dropout[0])
+
+        self.lightgcn = cornac.models.ngcf.ngcf.Model(g, node_dim, [node_dim]*3, dropout=layer_dropout[0],
+                                                  lightgcn=True, use_cuda=True)
+
+        if aggregator.startswith('narre'):
+            self.w_0 = nn.Linear(node_dim, node_dim)
+
+        if predictor == 'bi-interaction':
+            self.add_mlp = nn.Sequential(
+                nn.Linear(node_dim, node_dim),
+                nn.Tanh()
+            )
+            self.mul_mlp = nn.Sequential(
+                nn.Linear(node_dim, node_dim),
+                nn.Tanh()
+            )
+        elif self.predictor == 'narre':
+            self.edge_predictor = dgl.nn.EdgePredictor('ele', 2*node_dim, 1, bias=True)
+            self.bias = nn.Parameter(torch.zeros((n_nodes, 1)))
+
+        self.rating_loss_fn = nn.MSELoss(reduction='mean')
+        self.bpr_loss_fn = nn.Softplus()
+        self.review_embs = None
+        self.inf_emb = None
+        self.lemb = None
+        self.first = True
 
     def get_initial_embedings(self, nodes):
         if hasattr(self, 'node_embedding'):
@@ -295,7 +280,8 @@ class Model(nn.Module):
             return self.node_embedding_mlp(self.learned_node_embeddings[nodes])
 
     def l2_loss(self, pos, neg, emb):
-        emb = emb[0] * emb[1]
+        if isinstance(emb, list):
+            emb = torch.cat(emb, dim=-1)
 
         loss = 0
         src, dst_i = pos.edges()
@@ -309,23 +295,44 @@ class Model(nn.Module):
 
         return loss
 
+    def review_representation(self, g, x):
+        return self.review_conv(g, x)
+
+    def review_aggregation(self, g, x):
+        x = self.review_agg(g, x)
+        x = x.sum(1)
+
+        return x
+
     def forward(self, blocks, x):
         blocks, lgcn_blocks = blocks
-        lx = self.lightgcn(lgcn_blocks[0].ndata[dgl.NID], lgcn_blocks[:-1])
+        if self.narre_preference == 'lightgcn':
+            lx = self.lightgcn(lgcn_blocks[0].ndata[dgl.NID], lgcn_blocks[:-1])
+        else:
+            # Get user/item representation without any graph convolutions.
+            lx = {ntype: self.lightgcn.features[ntype](nids) for ntype, nids in
+                  lgcn_blocks[-1].srcdata[dgl.NID].items() if ntype != 'node'}
+
         g = lgcn_blocks[-1]
         with g.local_scope():
             g.srcdata['h'] = lx
-            funcs ={etype: (fn.copy_u('h', 'm'), fn.sum('m', 'h')) for etype in g.etypes}
+            funcs = {etype: (fn.copy_u('h', 'm'), fn.sum('m', 'h')) for etype in g.etypes}
             g.multi_update_all(funcs, 'sum')
             lx = g.dstdata['h']['node']
 
         x = self.node_dropout(x)
-        x = self.review_conv(blocks[0], x)
+        x = self.review_representation(blocks[0], x)
 
-        x = self.review_agg(blocks[1], x)
-        x = x.sum(1)
+        x = self.review_aggregation(blocks[1], x)
 
-        x = [x, lx]
+        x, lx = self.node_dropout(x), self.node_dropout(lx)
+
+        if self.predictor == 'narre':
+            x = torch.cat([x, lx], dim=-1)
+        elif self.predictor == 'bi-interaction':
+            x = [x, lx]
+        else:
+            x = x * lx
 
         return x
 
@@ -334,64 +341,18 @@ class Model(nn.Module):
             g.ndata['h'] = x
             g.apply_edges(fn.u_dot_v('h', 'h', 'm'))
 
-            return g.edata['m']
+            return g.edata['m'].reshape(-1, 1)
 
     def _graph_predict_narre(self, g: dgl.DGLGraph, x):
         with g.local_scope():
-            if hasattr(self, 'node_preference'):
-                np = self.node_preference(g.ndata[dgl.NID])
-            else:
-                np = self.learned_node_embeddings[g.ndata[dgl.NID]]
-                np = self.preference_mlp(np)
-                x = self.review_mlp(x)
-
-            g.ndata['h'] = x + self.node_dropout(np)
             g.ndata['b'] = self.bias[g.ndata[dgl.NID]]
-            g.apply_edges(fn.u_mul_v('h', 'h', 'm'))
-            g.apply_edges(fn.u_add_v('b', 'b', 'b'))
+            g.apply_edges(fn.u_add_v('b', 'b', 'b'))  # user/item bias
 
-            return self.w_1(g.edata['m']) + g.edata['b'].unsqueeze(-1)
+            u, v = g.edges()
+            x = self.edge_predictor(x[u], x[v])
+            out = x + g.edata['b']
 
-    def _graph_predict_narre2(self, g: dgl.DGLGraph, x, use_preference):
-        with g.local_scope():
-            if hasattr(self, 'node_preference'):
-                np = self.node_preference(g.ndata[dgl.NID])
-            else:
-                np = self.learned_node_embeddings[g.ndata[dgl.NID]]
-
-            x = [self.node_dropout(e) for e in x]
-
-            if use_preference:
-                g.ndata['h'] = x * np # torch.cat([x, np], dim=-1)
-            else:
-                # g.ndata['h'] = torch.cat([x[0], x[1]], dim=-1)
-                g.ndata['h'] = x[0] * x[1]
-                # g.ndata['h'] = x[1]
-            g.ndata['b'] = self.bias[g.ndata[dgl.NID]]
-            g.apply_edges(fn.u_dot_v('h', 'h', 'm'))
-            g.apply_edges(fn.u_add_v('b', 'b', 'b'))
-
-            out = g.edata['m']
-            # out += g.edata['b'].unsqueeze(-1)
-
-            return out #+ g.edata['b'].unsqueeze(-1)
-
-    def _graph_predict_narre3(self, g: dgl.DGLGraph, x, use_preference):
-        with g.local_scope():
-            if hasattr(self, 'node_preference'):
-                np = self.node_preference(g.ndata[dgl.NID])
-            else:
-                np = self.learned_node_embeddings[g.ndata[dgl.NID]]
-            if use_preference:
-                g.ndata['h'] = torch.cat([x, np], dim=-1)
-                u, v = g.edges()
-                out = self.w_1(torch.cat([g.ndata['h'][u], g.ndata['h'][v]], dim=-1))
-            else:
-                g.ndata['h'] = x
-                g.apply_edges(fn.u_dot_v('h', 'h', 'm'))
-                out = g.edata['m']
-
-            return out #+ g.edata['b'].unsqueeze(-1)
+            return out
 
     def _graph_bi_interaction(self, g: dgl.DGLGraph, x):
         x, lx = x
@@ -399,95 +360,31 @@ class Model(nn.Module):
             a = self.add_mlp(x + lx)
             m = self.mul_mlp(x * lx)
             x = a + m
-            u, v = g.edges()
-            pred = self._predict_dot(x[u], x[v])
+            pred = self._graph_predict_dot(g, x)
 
             return pred
 
-    def graph_predict(self, g: dgl.DGLGraph, x, use_preference=False):
+    def graph_predict(self, g: dgl.DGLGraph, x):
         if self.predictor == 'dot':
             return self._graph_predict_dot(g, x)
         elif self.predictor == 'narre':
-            return self._graph_predict_narre2(g, x, False)
+            return self._graph_predict_narre(g, x)
         elif self.predictor == 'bi-interaction':
             return self._graph_bi_interaction(g, x)
         else:
             raise ValueError(f'Predictor not implemented for "{self.predictor}".')
 
-    def review_representation(self, g, x):
-        return self.review_conv(g, x)
-
-    def review_aggregation(self, g, x):
-        x = self.review_agg(g, x)
-        x = x.sum(1)
-
-        # if self.aggregator.startswith('narre'):
-        #     x = self.w_0(x)
-
-        return x
-
     def _predict_dot(self, u_emb, i_emb):
         return (u_emb * i_emb).sum(-1)
 
     def _predict_narre(self, user, item, u_emb, i_emb):
-        if hasattr(self, 'node_preference'):
-            np_u = self.node_preference(user)
-            np_i = self.node_preference(item)
-        else:
-            np_u = self.learned_node_embeddings[user]
-            np_i = self.learned_node_embeddings[item]
-            np_u, np_i = self.preference_mlp(np_u), self.preference_mlp(np_i)
-            u_emb, i_emb = self.review_mlp(u_emb), self.review_mlp(i_emb)
-        h = (u_emb + np_u) * (i_emb + np_i)
-        return self.w_1(h) + (self.bias[user] + self.bias[item]).unsqueeze(-1)
+        lu_emb, li_emb = self.lemb[user], self.lemb[item]
 
-    def _predict_narre2(self, user, item, u_emb, i_emb, use_preference=False):
-        if hasattr(self, 'node_preference'):
-            np_u = self.node_preference(user)
-            np_i = self.node_preference(item)
-        else:
-            np_u = self.learned_node_embeddings[user]
-            np_i = self.learned_node_embeddings[item]
+        u = torch.cat([u_emb, lu_emb], dim=-1)
+        i = torch.cat([i_emb, li_emb], dim=-1)
 
-        if use_preference:
-            u = u_emb * np_u #torch.cat([u_emb, np_u], dim=-1)
-            i = i_emb * np_i #torch.cat([i_emb, np_i], dim=-1)
-        else:
-            lu_emb, li_emb = self.lemb[user], self.lemb[item]
-            # u = torch.cat([u_emb, lu_emb], dim=-1) # u_emb * lu_emb
-            # i = torch.cat([i_emb, li_emb], dim=-1) #i_emb * li_emb
-            u = u_emb * lu_emb
-            i = i_emb * li_emb
-            # u,i = lu_emb, li_emb
-
-        h = (u * i).sum(-1)
-        # h += (self.bias[user] + self.bias[item])
-
-        return h.reshape(-1, 1) #+ (self.bias[user] + self.bias[item]).reshape(-1, 1)
-
-    def _predict_narre3(self, user, item, u_emb, i_emb, use_preference=False):
-        if hasattr(self, 'node_preference'):
-            np_u = self.node_preference(user)
-            np_i = self.node_preference(item)
-        else:
-            np_u = self.learned_node_embeddings[user]
-            np_i = self.learned_node_embeddings[item]
-
-        if use_preference:
-            if not self.first:
-                u = torch.cat([u_emb, np_u], dim=-1)
-                i = torch.cat([i_emb, np_i], dim=-1)
-                u = torch.repeat_interleave(u, output_size=i.shape)
-                h = self.w_1(torch.cat([u, i]))
-            else:
-                u = np_u
-                i = np_i
-                h = (u * i).sum(-1)
-                self.first = False
-        else:
-            u = u_emb
-            i = i_emb
-            h = (u * i).sum(-1)
+        h = self.edge_predictor(u, i)
+        h += (self.bias[user] + self.bias[item])
 
         return h.reshape(-1, 1)
 
@@ -498,14 +395,15 @@ class Model(nn.Module):
         pred = self._predict_dot(u_emb, i_emb)
         return pred
 
-    def predict(self, user, item, use_preference=False):
+    def predict(self, user, item):
         u_emb, i_emb = self.inf_emb[user], self.inf_emb[item]
-        # u_emb, i_emb = self.learned_node_embeddings[user], self.learned_node_embeddings[item]
 
         if self.predictor == 'dot':
             pred = self._predict_dot(u_emb, i_emb)
         elif self.predictor == 'narre':
-            pred = self._predict_narre2(user, item, u_emb, i_emb, False)
+            pred = self._predict_narre(user, item, u_emb, i_emb)
+        elif self.predictor == 'bi-interaction':
+            pred = self._predict_bi_interaction(user, item, u_emb, i_emb)
         else:
             raise ValueError(f'Predictor not implemented for "{self.predictor}".')
 
@@ -515,25 +413,11 @@ class Model(nn.Module):
         return self.rating_loss_fn(preds, target.unsqueeze(-1))
 
     def _bpr_loss(self, preds_i, preds_j):
-        return self.bpr_loss_fn(- (preds_i - preds_j))
+        return
 
-    def _ccl_loss(self, preds_i, preds_j, w, m):
-        # (1 - i) + w * 1/|N| * sum(max(0, j - m) for j in N
-        # EQ. 1 in SimpleX, but based on code in:
-        # https://github.com/xue-pai/MatchBox/blob/master/deem/pytorch/losses/cosine_contrastive_loss.py
-        pos_loss = self.ccl_loss_fn(1 - preds_i)
-        neg_loss = self.ccl_loss_fn(preds_j - m)
-        neg_loss = neg_loss.mean(dim=-1, keepdims=True)
-        if w is not None:
-            neg_loss *= w
-
-        return pos_loss + neg_loss
-
-    def ranking_loss(self, preds_i, preds_j, loss_fn, *args):
+    def ranking_loss(self, preds_i, preds_j, loss_fn='bpr'):
         if loss_fn == 'bpr':
-            loss = self._bpr_loss(preds_i, preds_j)
-        elif loss_fn == 'ccl':
-            loss = self._ccl_loss(preds_i, preds_j, *args)
+            loss = self.bpr_loss_fn(- (preds_i - preds_j))
         else:
             raise NotImplementedError
 
@@ -569,8 +453,13 @@ class Model(nn.Module):
             x = self.review_aggregation(blocks[0]['part_of'], self.review_embs[input_nodes['review']])
             self.inf_emb[output_nodes['node']] = x
 
-        self.lightgcn.inference(ui_graph, batch_size)
-        x = self.lightgcn.embeddings
+        # Node preference embedding
+        if self.narre_preference == 'lightgcn':
+            self.lightgcn.inference(ui_graph, batch_size)
+            x = self.lightgcn.embeddings
+        else:
+            x = {nt: e.weight for nt, e in self.lightgcn.features.items()}
+
         x = torch.cat([x['item'], x['user']], dim=0)
         self.lemb = x
 

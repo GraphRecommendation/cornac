@@ -1,3 +1,4 @@
+import collections
 import json
 import os
 import pickle
@@ -21,23 +22,17 @@ class LightRLA(Recommender):
                  learning_rate=0.1,
                  weight_decay=0,
                  l2_weight=0.,
+                 n_layers=5,
                  node_dim=64,
-                 review_dim=32,
-                 final_dim=16,
                  num_heads=3,
                  fanout=5,
+                 use_relation=False,
                  model_selection='best',
                  objective='ranking',
-                 ranking_loss='bpr',
                  review_aggregator='narre',
                  predictor='gatv2',
-                 learned_embeddings=False,
-                 learned_preference=False,
-                 learned_node_embeddings=None,
-                 preference_module=None,
+                 preference_module='lightgcn',
                  num_neg_samples=50,
-                 margin=0.9,
-                 neg_weight=500,
                  layer_dropout=None,
                  attention_dropout=.2,
                  user_based=True,
@@ -45,10 +40,8 @@ class LightRLA(Recommender):
                  index=0,
                  use_tensorboard=True,
                  out_path=None,
-                 debug=False,
-                 use_transr=True
+                 debug=False
                  ):
-        self.l2_weight = l2_weight
         from torch.utils.tensorboard import SummaryWriter
 
         super().__init__(name)
@@ -69,29 +62,24 @@ class LightRLA(Recommender):
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.node_dim = node_dim
-        self.review_dim = review_dim
-        self.final_dim = final_dim
+        self.l2_weight = l2_weight
+        self.n_layers = n_layers
         self.num_heads = num_heads
         self.fanout = fanout
-        self.learned_embeddings = learned_embeddings
-        self.learned_preference = learned_preference
-        self.learned_node_embeddings = learned_node_embeddings
-        self.preference_module = preference_module
+        self.use_relation = use_relation
         self.model_selection = model_selection
         self.objective = objective
-        self.ranking_loss = ranking_loss
         self.review_aggregator = review_aggregator
         self.predictor = predictor
+        self.preference_module = preference_module
         self.num_neg_samples = num_neg_samples
-        self.margin = margin
-        self.neg_weight = neg_weight
         self.layer_dropout = layer_dropout
         self.attention_dropout = attention_dropout
-        self.use_transr = use_transr
-        parameter_list = ['batch_size', 'learning_rate', 'weight_decay', 'node_dim', 'review_dim',
-                          'final_dim', 'num_heads', 'fanout', 'model_selection', 'review_aggregator',
-                          'predictor', 'layer_dropout', 'attention_dropout', 'use_transr']
-        self.parameters = {k: self.__getattribute__(k) for k in parameter_list}
+        self.stemming = stemming
+        parameter_list = ['batch_size', 'learning_rate', 'weight_decay', 'node_dim', 'num_heads',
+                          'fanout', 'use_relation', 'model_selection', 'review_aggregator', 'objective',
+                          'predictor', 'preference_module', 'layer_dropout', 'attention_dropout', 'stemming']
+        self.parameters = collections.OrderedDict({k: self.__getattribute__(k) for k in parameter_list})
 
         # Method
         self.node_review_graph = None
@@ -100,8 +88,7 @@ class LightRLA(Recommender):
         self.ui_graph = None
         self.model = None
         self.n_items = 0
-        self.plateaued = False
-        self.stemming = stemming
+        self.n_relations = 0
         self.ntype_ranges = None
         self.node_filter = None
 
@@ -120,14 +107,8 @@ class LightRLA(Recommender):
         assert use_uva == use_cuda or not use_uva, 'use_cuda must be true when using uva.'
         assert objective == 'ranking' or objective == 'rating', f'This method only supports ranking or rating, ' \
                                                                 f'not {objective}.'
-        assert ranking_loss == 'bpr' or ranking_loss == 'ccl', f'Only bpr and ccl are supported not {ranking_loss}.'
-        assert not (self.learned_preference or self.learned_embeddings) or self.learned_node_embeddings is not None, \
-            'If using learned preference or learned embeddings, then learned node embeddings must be passed as' \
-            'an argument.'
-        assert (self.preference_module is None) ** self.learned_preference, \
-            'Cannot use both learned preference embeddings and use another preference module.'
 
-    def _create_graphs(self, train_set: Dataset):
+    def _create_graphs(self, train_set: Dataset, self_loop=True):
         import dgl
         import torch
 
@@ -151,6 +132,7 @@ class LightRLA(Recommender):
         n_aspects = len(a2a) if self.stemming else len(sentiment_modality.aspect_id_map)
         n_opinions = len(o2o) if self.stemming else len(sentiment_modality.opinion_id_map)
         n_nodes = n_users + n_items + n_aspects + n_opinions
+        n_types = 4
 
         user_item_review_map = {(uid + n_items, iid): rid for uid, irid in sentiment_modality.user_sentiment.items()
                                 for iid, rid in irid.items()}
@@ -180,13 +162,15 @@ class LightRLA(Recommender):
                         edges.append([f, s, edge_id])
                         edges.append([s, t, edge_id])
                         edges.append([t, f, edge_id])
-                        edges.append([f, f, edge_id])
-                        edges.append([s, s, edge_id])
-                        edges.append([t, t, edge_id])
+
+                        if self_loop:
+                            edges.append([f, f, edge_id])
+                            edges.append([s, s, edge_id])
+                            edges.append([t, t, edge_id])
                         edge_id += 1
 
-                src, dst = torch.LongTensor([e for e, _, _ in edges]), torch.LongTensor([e for _, e, _ in edges])
-                eids = torch.LongTensor([r for _, _, r in edges])
+                edges = torch.LongTensor(edges).T
+                src, dst, eids = edges
                 g = dgl.graph((torch.cat([src, dst]), torch.cat([dst, src])), num_nodes=n_nodes)
 
                 # All hyperedges connect 3 nodes
@@ -197,11 +181,20 @@ class LightRLA(Recommender):
                 g.ndata['norm'] = torch.zeros((g.num_nodes()))
                 g.ndata['norm'][[uid, iid]] = sqrt(3 * len(aos)) ** -1
 
+                u, v = g.edges()
+                uids_mask = (u >= n_items) * (u < n_items + n_users)
+                aids_mask = (u >= n_items + n_users) * (u < n_items + n_users + n_aspects)
+                oids_mask = u >= n_items + n_users + n_aspects
+                g.edata['type'] = torch.zeros((g.num_edges(),), dtype=torch.int64)
+                g.edata['type'][uids_mask] = 1
+                g.edata['type'][aids_mask] = 2
+                g.edata['type'][oids_mask] = 3
+
                 # a and o also have three hyper edge triples for each occurrence.
                 for nid, c in a_o_count.items():
                     g.ndata['norm'][nid] = sqrt(3 * c) ** -1
 
-                assert len(edges) * 2 == g.num_edges()
+                assert len(edges.T) * 2 == g.num_edges()
 
                 self.review_graphs[sid] = g
 
@@ -239,24 +232,26 @@ class LightRLA(Recommender):
                         'opinion': (n_items+n_users+n_aspects, n_items+n_users+n_aspects+n_opinions)}
         self.node_filter = lambda t, nids: (nids >= self.ntype_ranges[t][0]) * (nids < self.ntype_ranges[t][1])
 
-        return n_nodes
+        return n_nodes, n_types
 
     def fit(self, train_set: Dataset, val_set=None):
         from .lightrla import Model
         from cornac.models import NGCF
 
         super().fit(train_set, val_set)
-        n_nodes = self._create_graphs(train_set)  # graphs are as attributes of model.
+        n_nodes, self.n_relations = self._create_graphs(train_set)  # graphs are as attributes of model.
+
+        if not self.use_relation:
+            self.n_relations = 0
+
         self.ui_graph = NGCF.construct_graph(train_set, False)
         n_r_types = max(self.node_review_graph.edata['r_type']) + 1
         n_sentiments = len(set([aos[2] for sid in self.train_set.sentiment.sentiment.values() for aos in sid]))
 
         # create model
-        self.model = Model(self.ui_graph, n_nodes, n_r_types, n_sentiments, self.review_aggregator, self.predictor, self.node_dim,
-                           self.review_dim, self.final_dim, 32, self.num_heads, [self.layer_dropout]*2,
-                           self.attention_dropout, learned_embeddings=self.learned_embeddings,
-                           learned_preference=self.learned_preference,
-                           learned_node_embeddings=self.learned_node_embeddings)
+        self.model = Model(self.ui_graph, n_nodes, self.n_relations, n_r_types, self.review_aggregator,
+                           self.predictor, self.node_dim, self.num_heads, [self.layer_dropout]*2,
+                           self.attention_dropout, self.preference_module)
 
         self.model.reset_parameters()
 
@@ -329,10 +324,6 @@ class LightRLA(Recommender):
 
         best_state = None
         best_score = 0 if metrics[0].higher_better else float('inf')
-        # patience = self.early_stopping // 3 if self.early_stopping is not None else 10
-        # print(f'Setting patience to {patience}')
-        # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max' if metrics[0].higher_better else 'min',
-        #                                    patience=patience)
         best_epoch = 0
         epoch_length = len(dataloader)
         for e in range(self.num_epochs):
@@ -347,21 +338,21 @@ class LightRLA(Recommender):
                     else:
                         input_nodes, edge_subgraph, blocks = batch
 
-                    # with torch.autocast(self.device):
                     x = self.model(blocks, self.model.get_initial_embedings(input_nodes))
 
                     pred = self.model.graph_predict(edge_subgraph, x)
 
                     if self.objective == 'ranking':
-                        pred_j = self.model.graph_predict(neg_subgraph, x, self.plateaued).reshape(-1, self.num_neg_samples)
+                        pred_j = self.model.graph_predict(neg_subgraph, x).reshape(-1, self.num_neg_samples)
+                        pred_j = pred_j.reshape(-1, self.num_neg_samples)
                         acc = (pred > pred_j).sum() / pred_j.shape.numel()
-                        loss = self.model.ranking_loss(pred, pred_j, self.ranking_loss, self.neg_weight, self.margin)
+                        loss = self.model.ranking_loss(pred, pred_j)
                         cur_losses['loss'] = loss.detach()
                         cur_losses['acc'] = acc.detach()
 
                         if self.l2_weight:
-                            l2 = self.model.l2_loss(edge_subgraph, neg_subgraph, x)
-                            loss += self.l2_weight * l2
+                            l2 = self.l2_weight * self.model.l2_loss(edge_subgraph, neg_subgraph, x)
+                            loss += l2
                             cur_losses['l2'] = l2.detach()
                     else:
                         loss = self.model.rating_loss(pred, edge_subgraph.edata['label'])
@@ -400,36 +391,7 @@ class LightRLA(Recommender):
                             best_epoch = e
 
             if self.early_stopping is not None and (e - best_epoch) >= self.early_stopping:
-                if True or self.plateaued:
-                    break
-                else:
-                    print(f'Plateaued, using adding learned preference.')
-                    self.model.eval()
-                    with torch.no_grad():
-                        self.model.load_state_dict(best_state)
-                        self.model.inference(self.review_graphs, self.node_review_graph, self.ui_graph, self.device, self.batch_size)
-                        from cornac.eval_methods import ranking_eval
-                        user_c = {int(k): int(v) for k, v in Counter(self.train_set.matrix.nonzero()[0]).items()}
-                        (_, u_score1) = ranking_eval(self, metrics, self.train_set, val_set)
-                        self.plateaued = True
-                        (_, u_score2) = ranking_eval(self, metrics, self.train_set, val_set)
-                        u_score1, u_score2 = [[{int(k): float(v) for k, v in d.items()} for d in l] for l in [u_score1, u_score2]]
-
-                    with open(os.path.join(self.summary_writer.log_dir, 'scores.pickle'), 'wb') as f:
-                        pickle.dump({'uc': user_c, 'us1': u_score1[0], 'us2': u_score2[0],
-                                     'ratings': self.train_set.matrix}, f)
-
-
-                    best_epoch = e  # reset best state
-                    if self.model_selection == 'best':
-                        print('Using best state for fine tuning.')
-                        results = self._validate(val_set, metrics)
-                        best_score = results[0]
-                        print(f'Best score with preference: {best_score}')
-                        # parameters = [p for n, p in self.model.named_parameters() if n.startswith('w_1')]
-                        # optimizer = optim.Adam(parameters, lr=self.learning_rate, weight_decay=self.weight_decay)
-                        # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max' if metrics[0].higher_better else 'min',
-                        #                    patience=patience)
+                break
 
         del self.node_filter
         del g, eids
@@ -441,11 +403,14 @@ class LightRLA(Recommender):
 
         if val_set is not None and self.summary_writer is not None:
             results = self._validate(val_set, metrics)
-            self.summary_writer.add_hparams(self.parameters, dict(zip([m.name for m in metrics], results)))
+            self.summary_writer.add_hparams(dict(self.parameters), dict(zip([m.name for m in metrics], results)))
 
         self.model.eval()
         with torch.no_grad():
             self.model.inference(self.review_graphs, self.node_review_graph, self.ui_graph, self.device, self.batch_size)
+
+        self.best_epoch = best_epoch
+        self.best_value = best_score
 
     def _validate(self, val_set, metrics):
         from ...eval_methods.base_method import rating_eval, ranking_eval
@@ -468,10 +433,10 @@ class LightRLA(Recommender):
             user_idx = torch.tensor(user_idx + self.n_items, dtype=torch.int64).to(self.device)
             if item_idx is None:
                 item_idx = torch.arange(self.n_items, dtype=torch.int64).to(self.device)
-                pred = self.model.predict(user_idx, item_idx, self.plateaued).reshape(-1).cpu().numpy()
+                pred = self.model.predict(user_idx, item_idx).reshape(-1).cpu().numpy()
             else:
                 item_idx = torch.tensor(item_idx, dtype=torch.int64).to(self.device)
-                pred = self.model.predict(user_idx, item_idx, self.plateaued).cpu()
+                pred = self.model.predict(user_idx, item_idx).cpu()
 
             return pred
 
@@ -480,6 +445,7 @@ class LightRLA(Recommender):
 
     def save(self, save_dir=None):
         import torch
+        import pandas as pd
 
         if save_dir is None:
             return
@@ -489,3 +455,14 @@ class LightRLA(Recommender):
 
         state = self.model.state_dict()
         torch.save(state, os.path.join(save_dir, str(self.index), name))
+
+        results_path = os.path.join(path.rsplit('/', 1)[0], 'results.csv')
+        header = not os.path.exists(results_path)
+        self.parameters['score'] = self.best_value
+        self.parameters['epoch'] = self.best_epoch
+        self.parameters['file'] = path.rsplit('/')[-1]
+        self.parameters['id'] = self.index
+        df = pd.DataFrame({k: [v] for k, v in self.parameters.items()})
+        df.to_csv(results_path, header=header, mode='a', index=False)
+
+
