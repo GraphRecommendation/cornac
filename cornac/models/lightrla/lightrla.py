@@ -399,6 +399,7 @@ class Model(nn.Module):
         u_emb, i_emb = self.inf_emb[user], self.inf_emb[item]
 
         if self.predictor == 'dot':
+            u_emb, i_emb = u_emb * self.lemb[user], i_emb * self.lemb[item]
             pred = self._predict_dot(u_emb, i_emb)
         elif self.predictor == 'narre':
             pred = self._predict_narre(user, item, u_emb, i_emb)

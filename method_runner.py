@@ -27,7 +27,8 @@ lightrla_hyperparameters = {
     'weight_decay': [1e-6, 1e-5, 1e-4],
     'learning_rate': [0.0001, 0.001, 0.01],
     'dropout': np.linspace(0., 0.6, 7).round(1).tolist(),
-    'l2_weight': [1e-6, 1e-5, 1e-4, 0]
+    'l2_weight': [0],
+    'num_neg_samples': [50]
 }
 
 kgat_hyperparameters = {
