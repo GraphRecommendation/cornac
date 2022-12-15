@@ -20,6 +20,18 @@ shared_hyperparameters = {
     'predictor': 'narre',
 }
 
+lightrla2_hyperparameters = {
+    'review_aggregator': ['narre'],
+    'preference_module': ['lightgcn'],
+    'predictor': ['dot'],
+    'weight_decay': [10**i for i in range(-6, 3)],
+    'learning_rate': [0.001],
+    'dropout': [0.2],
+    'l2_weight': [0],
+    'num_neg_samples': [50],
+    'name': 'light2'
+}
+
 lightrla_hyperparameters = {
     'review_aggregator': ['narre'],
     'preference_module': ['narre', 'lightgcn'],
@@ -28,7 +40,8 @@ lightrla_hyperparameters = {
     'learning_rate': [0.0001, 0.001, 0.01],
     'dropout': np.linspace(0., 0.6, 7).round(1).tolist(),
     'l2_weight': [0],
-    'num_neg_samples': [50]
+    'num_neg_samples': [50],
+    'name': 'light2'
 }
 
 kgat_hyperparameters = {
@@ -77,6 +90,9 @@ def run(dataset, method):
 
     if method == 'lightrla':
         parameters = lightrla_hyperparameters
+    elif method == 'light2':
+        method = 'lightrla'
+        parameters = lightrla2_hyperparameters
     elif method == 'kgat':
         parameters = kgat_hyperparameters
     else:
