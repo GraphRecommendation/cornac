@@ -29,7 +29,7 @@ lightrla2_hyperparameters = {
     'dropout': [0.2],
     'l2_weight': [0],
     'num_neg_samples': [50],
-    'name': 'light2'
+    'name': ['light2']
 }
 
 lightrla_hyperparameters = {
