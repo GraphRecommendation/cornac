@@ -280,6 +280,8 @@ class NGCF(Recommender):
             self.summary_writer.add_hparams(self.parameters, dict(zip([m.name for m in metrics], results)))
 
         _ = self._validate(val_set, metrics)
+        self.best_epoch = best_epoch
+        self.best_value = best_score
 
     def _validate(self, val_set, metrics):
         from ...eval_methods.base_method import rating_eval, ranking_eval
@@ -317,6 +319,7 @@ class NGCF(Recommender):
 
     def save(self, save_dir=None):
         import torch
+        import pandas as pd
 
         if save_dir is None:
             return
@@ -326,3 +329,12 @@ class NGCF(Recommender):
 
         state = self.model.state_dict()
         torch.save(state, os.path.join(save_dir, str(self.index), name))
+
+        results_path = os.path.join(path.rsplit('/', 1)[0], 'results.csv')
+        header = not os.path.exists(results_path)
+        self.parameters['score'] = self.best_value
+        self.parameters['epoch'] = self.best_epoch
+        self.parameters['file'] = path.rsplit('/')[-1]
+        self.parameters['id'] = self.index
+        df = pd.DataFrame({k: [v] for k, v in self.parameters.items()})
+        df.to_csv(results_path, header=header, mode='a', index=False)
