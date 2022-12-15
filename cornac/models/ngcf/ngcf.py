@@ -195,7 +195,7 @@ class Model(nn.Module):
 
                     preds.append(torch.mul(embeddings[stype][src], embeddings[dtype][dst]).sum(dim=1))
 
-        return torch.cat()
+        return torch.cat(preds, dim=-1).reshape(-1, 1)
 
     def l2_loss(self, pos, neg, emb):
         loss = 0
