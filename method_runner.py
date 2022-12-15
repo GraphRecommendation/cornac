@@ -93,7 +93,7 @@ def run(dataset, method):
     elif method == 'light2':
         method = 'lightrla'
         parameters = lightrla2_hyperparameters
-    elif method == 'kgat':
+    elif method in ['kgat', 'lightgcn']:
         parameters = kgat_hyperparameters
     else:
         raise NotImplementedError
