@@ -11,3 +11,4 @@ powerlaw==1.5
 dgl==0.9.1
 dgl==0.9.1
 torch==1.12.1
+filelock==3.8.2

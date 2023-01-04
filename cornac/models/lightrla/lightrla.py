@@ -228,7 +228,7 @@ class Model(nn.Module):
                 nn.init.xavier_normal_(parameter)
 
     def __init__(self, g, n_nodes, n_hyper_graph_types, n_lgcn_relations, aggregator, predictor, node_dim,
-                 num_heads, layer_dropout, attention_dropout, narre_preference='lightgcn'):
+                 num_heads, layer_dropout, attention_dropout, narre_preference='lightgcn', use_cuda=True):
         super().__init__()
 
         self.aggregator = aggregator
@@ -248,7 +248,7 @@ class Model(nn.Module):
         self.node_dropout = nn.Dropout(layer_dropout[0])
 
         self.lightgcn = cornac.models.ngcf.ngcf.Model(g, node_dim, [node_dim]*3, dropout=layer_dropout[0],
-                                                  lightgcn=True, use_cuda=True)
+                                                  lightgcn=True, use_cuda=use_cuda)
 
         if aggregator.startswith('narre'):
             self.w_0 = nn.Linear(node_dim, node_dim)

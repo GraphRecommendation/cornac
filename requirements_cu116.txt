@@ -11,3 +11,4 @@ powerlaw==1.5
 nltk==3.7
 dgl-cu116==0.9.1
 torch==1.12.1+cu116
+filelock==3.8.2

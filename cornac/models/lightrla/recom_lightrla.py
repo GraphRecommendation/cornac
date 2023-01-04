@@ -1,7 +1,10 @@
 import collections
 import os
+import pickle
 from collections import defaultdict
+from contextlib import nullcontext
 from copy import deepcopy
+from itertools import combinations
 from math import sqrt
 from tqdm import tqdm
 
@@ -30,6 +33,7 @@ class LightRLA(Recommender):
                  review_aggregator='narre',
                  predictor='gatv2',
                  preference_module='lightgcn',
+                 graph_type='ao',
                  num_neg_samples=50,
                  layer_dropout=None,
                  attention_dropout=.2,
@@ -70,6 +74,7 @@ class LightRLA(Recommender):
         self.review_aggregator = review_aggregator
         self.predictor = predictor
         self.preference_module = preference_module
+        self.graph_type = graph_type
         self.num_neg_samples = num_neg_samples
         self.layer_dropout = layer_dropout
         self.attention_dropout = attention_dropout
@@ -95,6 +100,7 @@ class LightRLA(Recommender):
         self.verbose = verbose
         self.debug = debug
         self.index = index
+        self.out_path = out_path
         if use_tensorboard:
             assert out_path is not None, f'Must give a path if using tensorboard.'
             assert os.path.exists(out_path), f'{out_path} is not a valid path.'
@@ -106,7 +112,7 @@ class LightRLA(Recommender):
         assert objective == 'ranking' or objective == 'rating', f'This method only supports ranking or rating, ' \
                                                                 f'not {objective}.'
 
-    def _create_graphs(self, train_set: Dataset, self_loop=True):
+    def _create_graphs(self, train_set: Dataset, graph_type, self_loop=True):
         import dgl
         import torch
 
@@ -115,7 +121,6 @@ class LightRLA(Recommender):
         edge_id = 0
         n_users = len(train_set.uid_map)
         n_items = len(train_set.iid_map)
-        self.n_items = n_items
 
         def get_map(mapping, stemmer):
             id_to_new_word = {i: stemmer.stem(w) for w, i in mapping.items()}
@@ -136,6 +141,7 @@ class LightRLA(Recommender):
                                 for iid, rid in irid.items()}
         review_edges = []
         ratings = []
+        review_graphs = {}
         for uid, isid in tqdm(sentiment_modality.user_sentiment.items(), desc='Creating review graphs',
                               total=len(sentiment_modality.user_sentiment), disable=not self.verbose):
             uid += n_items
@@ -156,16 +162,33 @@ class LightRLA(Recommender):
 
                     a_o_count[aid] += 1
                     a_o_count[oid] += 1
-                    for f, s, t in [[uid, iid, aid], [uid, iid, oid], [uid, aid, oid], [iid, oid, aid]]:
-                        edges.append([f, s, edge_id])
-                        edges.append([s, t, edge_id])
-                        edges.append([t, f, edge_id])
+                    if graph_type == 'ao':
+                        n_hyper_edges = 3
+                        for f, s, t in [[uid, iid, aid], [uid, iid, oid], [uid, aid, oid], [iid, oid, aid]]:
+                            edges.append([f, s, edge_id])
+                            edges.append([s, t, edge_id])
+                            edges.append([t, f, edge_id])
 
+                            if self_loop:
+                                edges.append([f, f, edge_id])
+                                edges.append([s, s, edge_id])
+                                edges.append([t, t, edge_id])
+                            edge_id += 1
+                    elif graph_type == 'ao-one':
+                        n_hyper_edges = 1
+                        options = [uid, iid, aid, oid]
+                        self_loops = list(zip(options, options))
+
+                        options = list(combinations(options, 2))
                         if self_loop:
-                            edges.append([f, f, edge_id])
-                            edges.append([s, s, edge_id])
-                            edges.append([t, t, edge_id])
+                            options += self_loops
+
+                        for s, d in options:
+                            edges.append([s, d, edge_id])
+
                         edge_id += 1
+                    else:
+                        raise NotImplementedError
 
                 edges = torch.LongTensor(edges).T
                 src, dst, eids = edges
@@ -173,11 +196,11 @@ class LightRLA(Recommender):
 
                 # All hyperedges connect 3 nodes
                 g.edata['id'] = torch.cat([eids, eids])
-                g.edata['norm'] = torch.full((g.num_edges(),), 3 ** -1)
+                g.edata['norm'] = torch.full((g.num_edges(),), n_hyper_edges ** -1)
 
                 # User and item have three hyper-edges for each AOS triple.
                 g.ndata['norm'] = torch.zeros((g.num_nodes()))
-                g.ndata['norm'][[uid, iid]] = sqrt(3 * len(aos)) ** -1
+                g.ndata['norm'][[uid, iid]] = sqrt(n_hyper_edges * len(aos)) ** -1
 
                 u, v = g.edges()
                 uids_mask = (u >= n_items) * (u < n_items + n_users)
@@ -190,28 +213,28 @@ class LightRLA(Recommender):
 
                 # a and o also have three hyper edge triples for each occurrence.
                 for nid, c in a_o_count.items():
-                    g.ndata['norm'][nid] = sqrt(3 * c) ** -1
+                    g.ndata['norm'][nid] = sqrt(n_hyper_edges * c) ** -1
 
                 assert len(edges.T) * 2 == g.num_edges()
 
-                self.review_graphs[sid] = g
+                review_graphs[sid] = g
 
         # Create training graph, i.e. user to item graph.
         edges = [(uid + n_items, iid, train_set.matrix[uid, iid]) for uid, iid in zip(*train_set.matrix.nonzero())]
         t_edges = torch.LongTensor(edges).T
-        self.train_graph = dgl.graph((t_edges[0], t_edges[1]))
-        self.train_graph.edata['sid'] = torch.LongTensor([user_item_review_map[(u, i)] for (u, i, r) in edges])
-        self.train_graph.edata['label'] = t_edges[2].to(torch.float)
+        train_graph = dgl.graph((t_edges[0], t_edges[1]))
+        train_graph.edata['sid'] = torch.LongTensor([user_item_review_map[(u, i)] for (u, i, r) in edges])
+        train_graph.edata['label'] = t_edges[2].to(torch.float)
 
         # Create user/item to review graph.
         edges = torch.LongTensor(review_edges).T
-        self.node_review_graph = dgl.heterograph({('review', 'part_of', 'node'): (edges[0], edges[1])})
+        node_review_graph = dgl.heterograph({('review', 'part_of', 'node'): (edges[0], edges[1])})
 
         # Assign edges node_ids s.t. an edge from user to review has the item nid its about and reversely.
-        self.node_review_graph.edata['nid'] = torch.LongTensor(self.node_review_graph.num_edges())
-        _, v, eids = self.node_review_graph.edges(form='all')
-        self.node_review_graph.edata['nid'][eids % 2 == 0] = v[eids % 2 == 1]
-        self.node_review_graph.edata['nid'][eids % 2 == 1] = v[eids % 2 == 0]
+        node_review_graph.edata['nid'] = torch.LongTensor(node_review_graph.num_edges())
+        _, v, eids = node_review_graph.edges(form='all')
+        node_review_graph.edata['nid'][eids % 2 == 0] = v[eids % 2 == 1]
+        node_review_graph.edata['nid'][eids % 2 == 1] = v[eids % 2 == 0]
 
         # Scale ratings with denominator if not integers. I.e., if .25 multiply by 4.
         # A mapping from frac to int. If
@@ -223,13 +246,32 @@ class LightRLA(Recommender):
             i += 1
             assert i < 100, 'Tried to convert ratings to integers but took to long.'
 
-        self.node_review_graph.edata['r_type'] = torch.LongTensor(ratings)-1
+        node_review_graph.edata['r_type'] = torch.LongTensor(ratings)-1
 
-        self.ntype_ranges = {'item': (0, n_items), 'user': (n_items, n_items+n_users),
+        ntype_ranges = {'item': (0, n_items), 'user': (n_items, n_items+n_users),
                         'aspect': (n_items+n_users, n_items+n_users+n_aspects),
                         'opinion': (n_items+n_users+n_aspects, n_items+n_users+n_aspects+n_opinions)}
-        self.node_filter = lambda t, nids: (nids >= self.ntype_ranges[t][0]) * (nids < self.ntype_ranges[t][1])
 
+        return n_nodes, n_types, n_items, train_graph, review_graphs, node_review_graph, ntype_ranges
+
+    def _graph_wrapper(self, train_set, graph_type, *args):
+        from filelock import FileLock
+
+        fpath = os.path.join(self.out_path, f'graph_{graph_type}_data.pickle')
+        lockfpath = os.path.join(self.out_path, 'graph_data.pickle.lock')
+
+        with FileLock(lockfpath):
+            if os.path.exists(fpath):
+                with open(fpath, 'rb') as f:
+                    data = pickle.load(f)
+            else:
+                data = self._create_graphs(train_set, graph_type, *args)
+                with open(fpath, 'wb') as f:
+                    pickle.dump(data, f)
+
+        n_nodes, n_types, self.n_items, self.train_graph, self.review_graphs, self.node_review_graph, \
+            self.ntype_ranges = data
+        self.node_filter = lambda t, nids: (nids >= self.ntype_ranges[t][0]) * (nids < self.ntype_ranges[t][1])
         return n_nodes, n_types
 
     def fit(self, train_set: Dataset, val_set=None):
@@ -237,7 +279,7 @@ class LightRLA(Recommender):
         from cornac.models import NGCF
 
         super().fit(train_set, val_set)
-        n_nodes, self.n_relations = self._create_graphs(train_set)  # graphs are as attributes of model.
+        n_nodes, self.n_relations = self._graph_wrapper(train_set, self.graph_type)  # graphs are as attributes of model.
 
         if not self.use_relation:
             self.n_relations = 0
@@ -249,7 +291,7 @@ class LightRLA(Recommender):
         # create model
         self.model = Model(self.ui_graph, n_nodes, self.n_relations, n_r_types, self.review_aggregator,
                            self.predictor, self.node_dim, self.num_heads, [self.layer_dropout]*2,
-                           self.attention_dropout, self.preference_module)
+                           self.attention_dropout, self.preference_module, self.use_cuda)
 
         self.model.reset_parameters()
 
@@ -307,7 +349,10 @@ class LightRLA(Recommender):
         else:
             neg_sampler = None
 
-        sampler = dgl_utils.HEAREdgeSampler(sampler, prefetch_labels=prefetch, negative_sampler=neg_sampler)
+        sampler = dgl_utils.HEAREdgeSampler(sampler, prefetch_labels=prefetch, negative_sampler=neg_sampler,
+                                            exclude='self')
+        # sampler = dgl.dataloading.as_edge_prediction_sampler(sampler, prefetch_labels=prefetch, negative_sampler=neg_sampler,
+        #                                     exclude='self')
         dataloader = dgl.dataloading.DataLoader(g, eids, sampler, batch_size=self.batch_size, shuffle=True,
                                                 drop_last=True, device=self.device, use_uva=self.use_uva,
                                                 num_workers=num_workers, use_prefetch_thread=thread)
@@ -329,64 +374,65 @@ class LightRLA(Recommender):
             cur_losses = {}
             self.model.train()
 
-            with tqdm(dataloader, disable=not self.verbose) as progress:
-                for i, batch in enumerate(progress, 1):
-                    if self.objective == 'ranking':
-                        input_nodes, edge_subgraph, neg_subgraph, blocks = batch
-                    else:
-                        input_nodes, edge_subgraph, blocks = batch
+            with (dataloader.enable_cpu_affinity() if num_workers else nullcontext()):
+                with tqdm(dataloader, disable=not self.verbose) as progress:
+                    for i, batch in enumerate(progress, 1):
+                        if self.objective == 'ranking':
+                            input_nodes, edge_subgraph, neg_subgraph, blocks = batch
+                        else:
+                            input_nodes, edge_subgraph, blocks = batch
 
-                    x = self.model(blocks, self.model.get_initial_embedings(input_nodes))
+                        x = self.model(blocks, self.model.get_initial_embedings(input_nodes))
 
-                    pred = self.model.graph_predict(edge_subgraph, x)
+                        pred = self.model.graph_predict(edge_subgraph, x)
 
-                    if self.objective == 'ranking':
-                        pred_j = self.model.graph_predict(neg_subgraph, x).reshape(-1, self.num_neg_samples)
-                        pred_j = pred_j.reshape(-1, self.num_neg_samples)
-                        acc = (pred > pred_j).sum() / pred_j.shape.numel()
-                        loss = self.model.ranking_loss(pred, pred_j)
-                        cur_losses['loss'] = loss.detach()
-                        cur_losses['acc'] = acc.detach()
+                        if self.objective == 'ranking':
+                            pred_j = self.model.graph_predict(neg_subgraph, x).reshape(-1, self.num_neg_samples)
+                            pred_j = pred_j.reshape(-1, self.num_neg_samples)
+                            acc = (pred > pred_j).sum() / pred_j.shape.numel()
+                            loss = self.model.ranking_loss(pred, pred_j)
+                            cur_losses['loss'] = loss.detach()
+                            cur_losses['acc'] = acc.detach()
 
-                        if self.l2_weight:
-                            l2 = self.l2_weight * self.model.l2_loss(edge_subgraph, neg_subgraph, x)
-                            loss += l2
-                            cur_losses['l2'] = l2.detach()
-                    else:
-                        loss = self.model.rating_loss(pred, edge_subgraph.edata['label'])
-                        cur_losses['loss'] = loss.detach()
+                            if self.l2_weight:
+                                l2 = self.l2_weight * self.model.l2_loss(edge_subgraph, neg_subgraph, x)
+                                loss += l2
+                                cur_losses['l2'] = l2.detach()
+                        else:
+                            loss = self.model.rating_loss(pred, edge_subgraph.edata['label'])
+                            cur_losses['loss'] = loss.detach()
 
-                    loss.backward()
+                        loss.backward()
 
-                    for k, v in cur_losses.items():
-                        tot_losses[k] += v
-
-                    if self.summary_writer is not None:
                         for k, v in cur_losses.items():
-                            self.summary_writer.add_scalar(f'train/cf/{k}', v, e * epoch_length + i)
-
-                    optimizer.step()
-                    optimizer.zero_grad()
-                    loss_str = ','.join([f'{k}:{v/i:.3f}' for k, v in tot_losses.items()])
-                    if i != epoch_length or val_set is None:
-                        progress.set_description(f'Epoch {e}, ' + loss_str)
-                    else:
-                        results = self._validate(val_set, metrics)
-                        res_str = 'Val: ' + ', '.join([f'{m.name}:{r:.4f}' for m, r in zip(metrics, results)])
-                        progress.set_description(f'Epoch {e}, ' + f'{loss_str}, ' + res_str)
-                        
-                        # if scheduler is not None:
-                        #     scheduler.step(results[0])
+                            tot_losses[k] += v
 
                         if self.summary_writer is not None:
-                            for m, r in zip(metrics, results):
-                                self.summary_writer.add_scalar(f'val/{m.name}', r, e)
+                            for k, v in cur_losses.items():
+                                self.summary_writer.add_scalar(f'train/cf/{k}', v, e * epoch_length + i)
 
-                        if self.model_selection == 'best' and (results[0] > best_score if metrics[0].higher_better
-                                else results[0] < best_score):
-                            best_state = deepcopy(self.model.state_dict())
-                            best_score = results[0]
-                            best_epoch = e
+                        optimizer.step()
+                        optimizer.zero_grad()
+                        loss_str = ','.join([f'{k}:{v/i:.3f}' for k, v in tot_losses.items()])
+                        if i != epoch_length or val_set is None:
+                            progress.set_description(f'Epoch {e}, ' + loss_str)
+                        else:
+                            results = self._validate(val_set, metrics)
+                            res_str = 'Val: ' + ', '.join([f'{m.name}:{r:.4f}' for m, r in zip(metrics, results)])
+                            progress.set_description(f'Epoch {e}, ' + f'{loss_str}, ' + res_str)
+
+                            # if scheduler is not None:
+                            #     scheduler.step(results[0])
+
+                            if self.summary_writer is not None:
+                                for m, r in zip(metrics, results):
+                                    self.summary_writer.add_scalar(f'val/{m.name}', r, e)
+
+                            if self.model_selection == 'best' and (results[0] > best_score if metrics[0].higher_better
+                                    else results[0] < best_score):
+                                best_state = deepcopy(self.model.state_dict())
+                                best_score = results[0]
+                                best_epoch = e
 
             if self.early_stopping is not None and (e - best_epoch) >= self.early_stopping:
                 break

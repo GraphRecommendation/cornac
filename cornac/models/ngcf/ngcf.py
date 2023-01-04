@@ -143,14 +143,12 @@ class Model(nn.Module):
                     sampler,
                     batch_size=batch_size,
                     shuffle=True,
-                    drop_last=False)
+                    drop_last=False,
+                    device='cuda' if self.use_cuda else 'cpu')
 
                 # Within a layer, iterate over nodes in batches
                 for input_nodes, output_nodes, blocks in dataloader:
                     block = blocks[0]
-
-                    if self.use_cuda:
-                        block = block.to('cuda')
 
                     embedding = {k: embeddings[k][input_nodes[k]] for k in input_nodes.keys()}
 

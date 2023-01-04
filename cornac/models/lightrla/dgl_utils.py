@@ -39,7 +39,7 @@ class HEAREdgeSampler(dgl.dataloading.EdgePredictionSampler):
             g, seed_edges, exclude, self.reverse_eids, self.reverse_etypes,
             self.output_device)
 
-        input_nodes, _, blocks = self.sampler.sample(g, seed_nodes, exclude_eids, pair_graph)
+        input_nodes, _, blocks = self.sampler.sample(g, seed_nodes, exclude_eids, seed_edges)
 
         if self.negative_sampler is None:
             return self.assign_lazy_features((input_nodes, pair_graph, blocks))
@@ -85,21 +85,33 @@ class HearBlockSampler(dgl.dataloading.NeighborSampler):
 
         return dgl.heterograph(data, num_nodes_dict={'user': n_users, 'item': n_items, 'node': n_nodes})
 
-    def sample(self, g, seed_nodes, exclude_eids=None, pair_graph=None):
+    def sample(self, g, seed_nodes, exclude_eids=None, seed_edges=None):
         # If exclude eids, find the equivalent eid of the node_review_graph.
+        nrg_exclude_eids = None
+        lgcn_exclude_eids = None
         if exclude_eids is not None:
             u, v = g.find_edges(exclude_eids)
             sid = g.edata['sid'][exclude_eids]
-            exclude_eids = self.node_review_graph.edge_ids(sid, u, etype='part_of')
+            nrg_exclude_eids = self.node_review_graph.edge_ids(sid, u, etype='part_of')
+            lgcn_exclude_eids = dgl.dataloading.find_exclude_eids(
+                self.ui_graph, {'ui': seed_edges}, 'reverse_types', None, {'ui': 'iu', 'iu': 'ui'},
+                self.output_device)
 
         # Based on seed_nodes, find reviews to represent the nodes.
-        input_nodes, output_nodes, blocks = super().sample(self.node_review_graph, {'node': seed_nodes}, exclude_eids)
+        input_nodes, output_nodes, blocks = super().sample(self.node_review_graph, {'node': seed_nodes},
+                                                           nrg_exclude_eids)
         block = blocks[0]
 
         block = block['part_of']
         blocks[0] = block
 
-        assert torch.all(block.in_degrees(block.dstnodes()) != 0)
+        # If all nodes are removed, add random blocks/random reviews.
+        # Will not occur during inference.
+        if torch.any(block.in_degrees(block.dstnodes()) == 0):
+            for index in torch.where(block.in_degrees(block.dstnodes()) == 0)[0]:
+                perm = torch.randperm(block.num_src_nodes())
+                block.add_edges(block.srcnodes()[perm[:self.fanouts[0]]],
+                                index.repeat(min(self.fanouts[0], block.num_src_nodes())))
 
         r_gs = [self.review_graphs[sid] for sid in block.srcdata[dgl.NID].cpu().numpy()]
         if self.compact:
@@ -125,12 +137,12 @@ class HearBlockSampler(dgl.dataloading.NeighborSampler):
                 frontier = self.n_ui_graph.sample_neighbors(
                     seed_nodes, -1, edge_dir=self.edge_dir, prob=self.prob,
                     replace=self.replace, output_device=self.output_device,
-                    exclude_edges=exclude_eids)
+                    exclude_edges=None)
             else:
                 frontier = self.ui_graph.sample_neighbors(
                     seed_nodes, -1, edge_dir=self.edge_dir, prob=self.prob,
                     replace=self.replace, output_device=self.output_device,
-                    exclude_edges=exclude_eids)
+                    exclude_edges=lgcn_exclude_eids)
             eid = frontier.edata[dgl.EID]
             block = dgl.to_block(frontier, seed_nodes)
             block.edata[dgl.EID] = eid
