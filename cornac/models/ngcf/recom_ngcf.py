@@ -214,61 +214,60 @@ class NGCF(Recommender):
             cur_losses = {}
             self.model.train()
             # CF
-            with (cf_dataloader.enable_cpu_affinity() if num_workers else nullcontext()):
-                with tqdm(cf_dataloader, disable=not self.verbose) as progress:
-                    for i, batch in enumerate(progress, 1):
-                        if self.objective == 'ranking':
-                            input_nodes, edge_subgraph, neg_subgraph, blocks = batch
-                        else:
-                            input_nodes, edge_subgraph, blocks = batch
+            with tqdm(cf_dataloader, disable=not self.verbose) as progress:
+                for i, batch in enumerate(progress, 1):
+                    if self.objective == 'ranking':
+                        input_nodes, edge_subgraph, neg_subgraph, blocks = batch
+                    else:
+                        input_nodes, edge_subgraph, blocks = batch
 
-                        x = self.model(input_nodes, blocks)
+                    x = self.model(input_nodes, blocks)
 
-                        pred = self.model.graph_predict(edge_subgraph, x)
+                    pred = self.model.graph_predict(edge_subgraph, x)
 
-                        if self.objective == 'ranking':
-                            pred_j = self.model.graph_predict(neg_subgraph, x)
-                            acc = (pred > pred_j).sum() / pred_j.shape.numel()
-                            loss = self.model.ranking_loss(pred, pred_j)
-                            l2 = self.l2_weight * self.model.l2_loss(edge_subgraph, neg_subgraph, x)
-                            cur_losses['loss'] = loss.detach()
-                            cur_losses['l2'] = l2.detach()
-                            cur_losses['acc'] = acc.detach()
-                            loss += l2
-                        else:
-                            loss = self.model.rating_loss(pred, edge_subgraph['n_i'].edata['label'])
-                            cur_losses['loss'] = loss.detach()
+                    if self.objective == 'ranking':
+                        pred_j = self.model.graph_predict(neg_subgraph, x)
+                        acc = (pred > pred_j).sum() / pred_j.shape.numel()
+                        loss = self.model.ranking_loss(pred, pred_j)
+                        l2 = self.l2_weight * self.model.l2_loss(edge_subgraph, neg_subgraph, x)
+                        cur_losses['loss'] = loss.detach()
+                        cur_losses['l2'] = l2.detach()
+                        cur_losses['acc'] = acc.detach()
+                        loss += l2
+                    else:
+                        loss = self.model.rating_loss(pred, edge_subgraph['n_i'].edata['label'])
+                        cur_losses['loss'] = loss.detach()
 
-                        loss = loss
-                        loss.backward()
+                    loss = loss
+                    loss.backward()
+                    for k, v in cur_losses.items():
+                        tot_losses[k] += v
+
+                    cf_optimizer.step()
+                    cf_optimizer.zero_grad()
+
+                    if self.summary_writer is not None:
                         for k, v in cur_losses.items():
-                            tot_losses[k] += v
+                            self.summary_writer.add_scalar(f'train/cf/{k}', v, e * cf_length + i)
 
-                        cf_optimizer.step()
-                        cf_optimizer.zero_grad()
+                    loss_str = ','.join([f'{k}: {v/i:.3f}' for k, v in tot_losses.items()])
+                    if i != cf_length:
+                        progress.set_description(f'Epoch {e}, ' + loss_str)
+                    else:
+                        if val_set is not None:
+                            results = self._validate(val_set, metrics)
+                            res_str = 'Val: ' + ', '.join([f'{m.name}: {r:.3f}' for m, r in zip(metrics, results)])
+                            progress.set_description(f'Epoch {e}, ' + f'{loss_str}, ' + res_str)
 
-                        if self.summary_writer is not None:
-                            for k, v in cur_losses.items():
-                                self.summary_writer.add_scalar(f'train/cf/{k}', v, e * cf_length + i)
+                            if self.summary_writer is not None:
+                                for m, r in zip(metrics, results):
+                                    self.summary_writer.add_scalar(f'val/{m.name}', r, e)
 
-                        loss_str = ','.join([f'{k}: {v/i:.3f}' for k, v in tot_losses.items()])
-                        if i != cf_length:
-                            progress.set_description(f'Epoch {e}, ' + loss_str)
-                        else:
-                            if val_set is not None:
-                                results = self._validate(val_set, metrics)
-                                res_str = 'Val: ' + ', '.join([f'{m.name}: {r:.3f}' for m, r in zip(metrics, results)])
-                                progress.set_description(f'Epoch {e}, ' + f'{loss_str}, ' + res_str)
-
-                                if self.summary_writer is not None:
-                                    for m, r in zip(metrics, results):
-                                        self.summary_writer.add_scalar(f'val/{m.name}', r, e)
-
-                                if self.model_selection == 'best' and (results[0] > best_score if metrics[0].higher_better
-                                        else results[0] < best_score):
-                                    best_state = deepcopy(self.model.state_dict())
-                                    best_score = results[0]
-                                    best_epoch = e
+                            if self.model_selection == 'best' and (results[0] > best_score if metrics[0].higher_better
+                                    else results[0] < best_score):
+                                best_state = deepcopy(self.model.state_dict())
+                                best_score = results[0]
+                                best_epoch = e
 
             if self.early_stopping is not None and e - best_epoch >= self.early_stopping:
                 break
