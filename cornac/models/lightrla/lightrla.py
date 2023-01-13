@@ -272,6 +272,7 @@ class Model(nn.Module):
         self.inf_emb = None
         self.lemb = None
         self.first = True
+        self.review_attention = None
 
     def get_initial_embedings(self, nodes):
         if hasattr(self, 'node_embedding'):
@@ -298,11 +299,18 @@ class Model(nn.Module):
     def review_representation(self, g, x):
         return self.review_conv(g, x)
 
-    def review_aggregation(self, g, x):
-        x = self.review_agg(g, x)
+    def review_aggregation(self, g, x, attention=False):
+        x = self.review_agg(g, x, attention)
+
+        if attention:
+            x, a = x
+
         x = x.sum(1)
 
-        return x
+        if attention:
+            return x, a
+        else:
+            return x
 
     def forward(self, blocks, x):
         blocks, lgcn_blocks = blocks
@@ -448,11 +456,13 @@ class Model(nn.Module):
                                                 drop_last=False, device=device)
 
         self.inf_emb = torch.zeros((torch.max(indices['node'])+1, self.node_dim)).to(device)
+        self.review_attention = torch.zeros((node_review_graph.num_edges(), self.review_agg._num_heads, 1)).to(device)
 
         # Node inference
         for input_nodes, output_nodes, blocks in dataloader:
-            x = self.review_aggregation(blocks[0]['part_of'], self.review_embs[input_nodes['review']])
+            x, a = self.review_aggregation(blocks[0]['part_of'], self.review_embs[input_nodes['review']], True)
             self.inf_emb[output_nodes['node']] = x
+            self.review_attention[blocks[0]['part_of'].edata[dgl.EID]] = a
 
         # Node preference embedding
         if self.narre_preference == 'lightgcn':
