@@ -13,8 +13,6 @@ from cornac.data import Reader, SentimentModality, ReviewModality
 from cornac.datasets import amazon_cellphone_seer, amazon_computer_seer
 from cornac.eval_methods import StratifiedSplit
 
-METHOD_NAMES = {'lightrla': 'LightRLA', 'lightgcn': 'lightgcn'}
-
 
 def run(path, dataset, methods):
     eval_method = statistics.utils.initialize_dataset(dataset)
