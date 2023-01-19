@@ -6,6 +6,8 @@ from contextlib import nullcontext
 from copy import deepcopy
 from itertools import combinations
 from math import sqrt
+
+import re
 from tqdm import tqdm
 
 from nltk.stem import PorterStemmer
@@ -274,12 +276,61 @@ class LightRLA(Recommender):
         self.node_filter = lambda t, nids: (nids >= self.ntype_ranges[t][0]) * (nids < self.ntype_ranges[t][1])
         return n_nodes, n_types
 
+    def _learn_initial_embeddings(self, train_set):
+        from gensim.models import Word2Vec
+
+        # get texts
+        corpus = [re.sub(r'\s+', ' ', re.sub(r'[^\w-]', ' ', sentence)).replace(' -- ', '--').split(' ')
+                  for review in train_set.review_text.corpus
+                  for sentence in review.split('.')]
+        id_a = {v: k for k, v in train_set.sentiment.aspect_id_map.items()}
+        id_o = {v: k for k, v in train_set.sentiment.opinion_id_map.items()}
+        a = {id_a[e[0]] for aoss in train_set.sentiment.sentiment.values() for e in aoss}
+        o = {id_o[e[1]] for aoss in train_set.sentiment.sentiment.values() for e in aoss}
+        assert len(a.union(o).difference({w for s in corpus for w in s})) == 0
+        ao = set(train_set.sentiment.aspect_id_map).union(train_set.sentiment.opinion_id_map)
+        diff = ao.difference({w for s in corpus for w in s})
+        sid_ui = {sid: (u,i) for u, isid in train_set.sentiment.user_sentiment.items() for i, sid in isid.items()}
+        review_sid_diff = []
+        id_a = {v: k for k, v in train_set.sentiment.aspect_id_map.items()}
+        id_o = {v: k for k, v in train_set.sentiment.opinion_id_map.items()}
+        seen = set()
+        for sid, aoss in train_set.sentiment.sentiment.items():
+            for a, o, s in aoss:
+                a, o = id_a[a], id_o[o]
+                if a in diff or o in diff:
+                    seen.update({a, o})
+                    u, i = sid_ui[sid]
+                    rid = train_set.review_text.user_review[u][i]
+                    review_sid_diff.append((rid, sid))
+                    break
+
+        worked = 0
+        not_worked = []
+        for rid, sid in review_sid_diff:
+            ao = [(id_a[a], id_o[o]) for a, o, s in train_set.sentiment.sentiment[sid]]
+            review = train_set.review_text.reviews[rid]
+            trouble_words = [o if o in diff else a for a, o in ao if a in diff or o in diff]
+            review_new = review.replace(' -- ', '--')
+            
+            test = all([tw in review_new for tw in trouble_words])
+            if test:
+                worked += 1
+            else:
+                not_worked.append((review, trouble_words))
+        # partition texts
+        # Word to id
+        # map words to aspects and opinions
+
+        return None
+
     def fit(self, train_set: Dataset, val_set=None):
         from .lightrla import Model
         from cornac.models import NGCF
 
         super().fit(train_set, val_set)
         n_nodes, self.n_relations = self._graph_wrapper(train_set, self.graph_type)  # graphs are as attributes of model.
+        embs = self._learn_initial_embeddings(train_set)
 
         if not self.use_relation:
             self.n_relations = 0
