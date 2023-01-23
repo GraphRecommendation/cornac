@@ -13,3 +13,4 @@ dgl-cu113==0.9.1
 torch==1.12.1+cu113
 filelock==3.8.2
 gensim==4.3.0
+sentence-transformers==2.2.2

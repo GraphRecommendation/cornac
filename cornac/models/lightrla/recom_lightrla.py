@@ -8,6 +8,9 @@ from itertools import combinations
 from math import sqrt
 
 import re
+
+import numpy as np
+import torch
 from tqdm import tqdm
 
 from nltk.stem import PorterStemmer
@@ -256,73 +259,159 @@ class LightRLA(Recommender):
 
         return n_nodes, n_types, n_items, train_graph, review_graphs, node_review_graph, ntype_ranges
 
-    def _graph_wrapper(self, train_set, graph_type, *args):
+    def _flock_wrapper(self, func, fname, *args, **kwargs):
         from filelock import FileLock
 
-        fpath = os.path.join(self.out_path, f'graph_{graph_type}_data.pickle')
-        lockfpath = os.path.join(self.out_path, 'graph_data.pickle.lock')
+        fpath = os.path.join(self.out_path, fname)
+        lock_fpath = os.path.join(self.out_path, fname + '.lock')
 
-        with FileLock(lockfpath):
+        with FileLock(lock_fpath):
             if os.path.exists(fpath):
                 with open(fpath, 'rb') as f:
                     data = pickle.load(f)
             else:
-                data = self._create_graphs(train_set, graph_type, *args)
+                data = func(*args, **kwargs)
                 with open(fpath, 'wb') as f:
                     pickle.dump(data, f)
+
+        return data
+
+    def _graph_wrapper(self, train_set, graph_type, *args):
+        fname = f'graph_{graph_type}_data.pickle'
+        data = self._flock_wrapper(self._create_graphs, fname, train_set, graph_type, *args)
 
         n_nodes, n_types, self.n_items, self.train_graph, self.review_graphs, self.node_review_graph, \
             self.ntype_ranges = data
         self.node_filter = lambda t, nids: (nids >= self.ntype_ranges[t][0]) * (nids < self.ntype_ranges[t][1])
         return n_nodes, n_types
 
-    def _learn_initial_embeddings(self, train_set):
+    def _ao_embeddings(self, train_set):
         from gensim.models import Word2Vec
+        from gensim.parsing import remove_stopwords, preprocess_string, stem_text
+        import torch
 
-        # get texts
-        corpus = [re.sub(r'\s+', ' ', re.sub(r'[^\w-]', ' ', sentence)).replace(' -- ', '--').split(' ')
+        sentiment = train_set.sentiment
+
+        # Define preprocess functions for text, aspects and opinions.
+        preprocess_fn = lambda x: stem_text(re.sub(r'\s+', ' ', re.sub(r'--+|-+ ', ' ', re.sub(r'[^\w\-_]', ' ', x))))
+        ao_preprocess_fn = lambda x: stem_text(re.sub(r'--+.*|-+$', '', x))
+
+        # Process corpus
+        corpus = [preprocess_fn(sentence)
                   for review in train_set.review_text.corpus
                   for sentence in review.split('.')]
-        id_a = {v: k for k, v in train_set.sentiment.aspect_id_map.items()}
-        id_o = {v: k for k, v in train_set.sentiment.opinion_id_map.items()}
-        a = {id_a[e[0]] for aoss in train_set.sentiment.sentiment.values() for e in aoss}
-        o = {id_o[e[1]] for aoss in train_set.sentiment.sentiment.values() for e in aoss}
-        assert len(a.union(o).difference({w for s in corpus for w in s})) == 0
-        ao = set(train_set.sentiment.aspect_id_map).union(train_set.sentiment.opinion_id_map)
-        diff = ao.difference({w for s in corpus for w in s})
-        sid_ui = {sid: (u,i) for u, isid in train_set.sentiment.user_sentiment.items() for i, sid in isid.items()}
-        review_sid_diff = []
-        id_a = {v: k for k, v in train_set.sentiment.aspect_id_map.items()}
-        id_o = {v: k for k, v in train_set.sentiment.opinion_id_map.items()}
-        seen = set()
-        for sid, aoss in train_set.sentiment.sentiment.items():
-            for a, o, s in aoss:
-                a, o = id_a[a], id_o[o]
-                if a in diff or o in diff:
-                    seen.update({a, o})
-                    u, i = sid_ui[sid]
-                    rid = train_set.review_text.user_review[u][i]
-                    review_sid_diff.append((rid, sid))
-                    break
 
-        worked = 0
-        not_worked = []
-        for rid, sid in review_sid_diff:
-            ao = [(id_a[a], id_o[o]) for a, o, s in train_set.sentiment.sentiment[sid]]
-            review = train_set.review_text.reviews[rid]
-            trouble_words = [o if o in diff else a for a, o in ao if a in diff or o in diff]
-            review_new = review.replace(' -- ', '--')
-            
-            test = all([tw in review_new for tw in trouble_words])
-            if test:
-                worked += 1
-            else:
-                not_worked.append((review, trouble_words))
-        # partition texts
-        # Word to id
-        # map words to aspects and opinions
+        # Process aspects and opinions.
+        a_old_new_map = {a: ao_preprocess_fn(a) for a in sentiment.aspect_id_map}
+        o_old_new_map = {o: ao_preprocess_fn(o) for o in sentiment.opinion_id_map}
 
-        return None
+        # Define a progressbar for easier training.
+        class CallbackProgressBar:
+            def __init__(self, verbose):
+                self.verbose = verbose
+                self.progress = None
+
+            def on_train_begin(self, method):
+                if self.progress is None:
+                    self.progress = tqdm(desc='Training Word2Vec', total=method.epochs, disable=not self.verbose)
+
+            def on_train_end(self, method):
+                pass
+
+            def on_epoch_begin(self, method):
+                pass
+
+            def on_epoch_end(self, method):
+                self.progress.update(1)
+
+        # Get words and train model
+        wc = [s.split(' ') for s in corpus]
+        l = CallbackProgressBar(self.verbose)
+        embedding_dim = 100
+        w2v_model = Word2Vec(wc, vector_size=embedding_dim, min_count=1, window=5, callbacks=[l], epochs=100)
+
+        # Keyvector model
+        kv = w2v_model.wv
+
+        # Initialize embeddings
+        a_embeddings = np.zeros((len(sentiment.aspect_id_map), embedding_dim))
+        o_embeddings = np.zeros((len(sentiment.opinion_id_map), embedding_dim))
+
+        # Define function for assigning embeddings to correct aspect.
+        def get_info(old_new_pairs, mapping, embedding):
+            for old, new in old_new_pairs:
+                nid = mapping[old]
+                vector = np.array(kv.get_vector(new))
+                embedding[nid] = vector
+
+            return embedding
+
+        a_embeddings = get_info(a_old_new_map.items(), sentiment.aspect_id_map, a_embeddings)
+        o_embeddings = get_info(o_old_new_map.items(), sentiment.opinion_id_map, o_embeddings)
+
+        return a_embeddings, o_embeddings, kv
+
+    def _ui_embeddings(self, train_set):
+        from sentence_transformers import SentenceTransformer
+
+        # Create sentence embeddings using sentence bert
+        user_sentences = defaultdict(list)
+        item_sentences = defaultdict(list)
+        corpus = []
+        index = 0
+        for uid, irid in train_set.review_text.user_review.items():
+            for iid, rid in irid.items():
+                for s in train_set.review_text.reviews[rid].split('.'):
+                    user_sentences[uid].append(index)
+                    item_sentences[iid].append(index)
+                    corpus.append(s)
+                    index += 1
+
+        # https://huggingface.co/sentence-transformers/all-mpnet-base-v2
+        model = SentenceTransformer('all-mpnet-base-v2', device='cuda')
+        embedding_dim = model[1].pooling_output_dimension
+        u_embeddings = np.zeros((train_set.num_users, embedding_dim))
+        i_embeddings = np.zeros((train_set.num_items, embedding_dim))
+
+        def generate_embeddings(id_sentences, embeddings, sentence_embeddings):
+            for nid, sents in id_sentences:
+                embeddings[nid] = sentence_embeddings[sents].mean(0)
+
+            return embeddings
+
+        sent_embeddings = model.encode(corpus)
+        u_embeddings = generate_embeddings(user_sentences.items(), u_embeddings, sent_embeddings)
+        i_embeddings = generate_embeddings(item_sentences.items(), i_embeddings, sent_embeddings)
+
+        return u_embeddings, i_embeddings
+
+    def _normalize_embedding(self, embedding):
+        from sklearn.preprocessing import StandardScaler
+        scaler = StandardScaler()
+        scaler.fit(embedding)
+        return scaler.transform(embedding), scaler
+
+    def _learn_initial_embeddings(self, train_set):
+        ao_fname = 'ao_embeddings.pickle'
+        ui_fname = 'ui_embeddings.pickle'
+        a_fname = 'aspect_embeddings.pickle'
+        o_fname = 'opinion_embeddings.pickle'
+        u_fname = 'user_embeddings.pickle'
+        i_fname = 'item_embeddings.pickle'
+
+        # Get embeddings and store result
+        a_embeddings, o_embeddings, _ = self._flock_wrapper(self._ao_embeddings, ao_fname, train_set)
+        u_embeddings, i_embeddings = self._flock_wrapper(self._ui_embeddings, ui_fname, train_set)
+
+        # Scale embeddings and store results. Function returns scaler, which is not needed, but required if new data is
+        # added.
+        a_embeddings, _ = self._flock_wrapper(self._normalize_embedding, a_fname, a_embeddings)
+        o_embeddings, _ = self._flock_wrapper(self._normalize_embedding, o_fname, o_embeddings)
+        u_embeddings, _ = self._flock_wrapper(self._normalize_embedding, u_fname, u_embeddings)
+        i_embeddings, _ = self._flock_wrapper(self._normalize_embedding, i_fname, i_embeddings)
+
+        return torch.tensor(a_embeddings), torch.tensor(o_embeddings), torch.tensor(u_embeddings), \
+            torch.tensor(i_embeddings)
 
     def fit(self, train_set: Dataset, val_set=None):
         from .lightrla import Model
@@ -330,7 +419,7 @@ class LightRLA(Recommender):
 
         super().fit(train_set, val_set)
         n_nodes, self.n_relations = self._graph_wrapper(train_set, self.graph_type)  # graphs are as attributes of model.
-        embs = self._learn_initial_embeddings(train_set)
+        a_embs, o_embs, u_embs, i_embs = self._learn_initial_embeddings(train_set)
 
         if not self.use_relation:
             self.n_relations = 0
