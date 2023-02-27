@@ -1,9 +1,8 @@
 import argparse
 import os
 import pickle
-from functools import lru_cache
 
-import nltk.translate.meteor_score
+import evaluate
 import pandas as pd
 from tqdm import tqdm
 
@@ -27,7 +26,15 @@ def statistics(eval_method, actual_review, data, item_wise=True):
 
         compare.append([actual_review[(uid, iid)], selected])
 
-    tor
+    target = [t for t, _ in compare]
+    pred = [p for _, p in compare]
+
+    results = {}
+    for metric in ['rouge', 'meteor']:
+        m = evaluate.load(metric)
+        results[metric] = m.compute(predictions=pred, references=target)
+
+    return results
 
 
 def extract_rid(eval_method, data):

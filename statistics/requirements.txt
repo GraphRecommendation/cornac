@@ -1,2 +1,3 @@
 latextable
-torchmetrics
+evaluate
+rouge_score
