@@ -1,12 +1,14 @@
 import itertools
 import math
 import sys
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
+import re
 import torch
+from cachetools.func import lru_cache
 from tqdm import tqdm
 
 from cornac.models.lightrla.dgl_utils import extract_attention
@@ -140,6 +142,219 @@ def limit_edges_to_best_user(edges, model, eval_method, user):
 def get_intersecting_reviews():
     pass
 
+
+@lru_cache()
+def dicts(sentiment, match, get_ao_mappings=False):
+    sent, a_mapping, o_mapping = stem(sentiment)
+    # sent = sentiment.sentiment
+    aos_user = defaultdict(list)
+    aos_item = defaultdict(list)
+    aos_sent = defaultdict(list)
+    user_aos = defaultdict(list)
+    item_aos = defaultdict(list)
+    sent_aos = defaultdict(list)
+    for uid, isid in sentiment.user_sentiment.items():
+        for iid, sid in isid.items():
+            for a, o, s in sent[sid]:
+                if match == 'aos':
+                    element = (a, o, s)
+                elif match == 'a':
+                    element = a
+                else:
+                    raise NotImplementedError
+
+                aos_user[element].append(uid)
+                aos_item[element].append(iid)
+                aos_sent[element].append(sid)
+                user_aos[uid].append(element)
+                item_aos[iid].append(element)
+                sent_aos[sid].append(element)
+
+    if not get_ao_mappings:
+        return aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos
+    else:
+        return aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos, a_mapping, o_mapping
+
+
+def stem(sentiment):
+    from gensim.parsing import stem_text
+    ao_preprocess_fn = lambda x: stem_text(re.sub(r'--+.*|-+$', '', x))
+    a_id_new = {i: ao_preprocess_fn(e) for e, i in sentiment.aspect_id_map.items()}
+    o_id_new = {i: ao_preprocess_fn(e) for e, i in sentiment.opinion_id_map.items()}
+    a_id = {e: i for i, e in enumerate(set(a_id_new.values()))}
+    o_id = {e: i for i, e in enumerate(set(o_id_new.values()))}
+    a_o_n = {i: a_id[e] for i, e in a_id_new.items()}
+    o_o_n = {i: o_id[e] for i, e in o_id_new.items()}
+
+    s = OrderedDict()
+    for i, aos in sentiment.sentiment.items():
+        s[i] = [(a_o_n[a], o_o_n[o], s) for a, o, s in aos]
+
+    return s, a_o_n, o_o_n
+
+
+def reverse_match(user, item, sentiment, match='a'):
+    aos_user, aos_item, _, user_aos, item_aos, _ = dicts(sentiment, match)
+
+    dst = user_aos[user]
+    src = item_aos[item]
+    lu, li = len(sentiment.user_sentiment[user]), len(sentiment.item_sentiment[item])
+    # Direct connection to item
+    if any([s in dst for s in src]):
+        return 0, lu, li
+
+    # Is it connected to a one hop user?
+    elements = {e for uid in sentiment.item_sentiment[item].keys() for e in user_aos[uid]}
+
+    if any([e in dst for e in elements]):
+        return 1, lu, li
+    else:
+        return 2, lu, li
+
+
+def reverse_path(eval_method, user, item, match):
+    sentiment = eval_method.sentiment
+    num_items = eval_method.train_set.num_items
+    aos_user, aos_item, _, user_aos, item_aos, _ = dicts(sentiment, match)
+
+    dst = user_aos[user]
+    src = item_aos[item]
+
+    edges = defaultdict(set)
+    edges[0].update((s, item) for s in src)
+    index = 1
+
+    # Direct connection to item
+    if any([s in dst for s in src]):
+        edges[index].update((user+num_items, d) for d in dst if d in src)
+        edges[0] = {e for e in edges[0] if e[0] in dst}
+        return edges
+
+    # Get one hop users
+    edges[index].update([(uid+num_items, e) for uid in sentiment.item_sentiment[item].keys()
+                  for e in user_aos[uid] if e in src])
+    index += 1
+    edges[index].update([(e, uid) for (uid, _) in edges[index - 1] for e in user_aos[uid-num_items]])
+    index += 1
+
+    ndst = {e[0] for e in edges[index - 1]}
+    if any(d in ndst for d in dst):
+        edges[index].update([(user+num_items, e) for (e, _) in edges[index - 1] if e in dst])
+
+        # Prune edges.
+        n_edges = defaultdict(set)
+        cur_set = {user+num_items}
+        for i in reversed(range(index+1)):
+            cur_edges = {e for e in edges[i] if e[0] in cur_set}
+            n_edges[i].update(cur_edges)
+            cur_set = {e[1] for e in cur_edges}
+
+        return n_edges
+    else:
+        return None
+
+
+def get_reviews(eval_method, model, edges, match, hackjob=True):
+    aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos = dicts(eval_method.sentiment, match)
+
+    # Get review attention.
+    if hackjob:
+        with torch.no_grad():
+            attention = extract_attention(model.model, model.node_review_graph, model.device)
+    else:
+        raise NotImplementedError
+
+    # Get most relevant review for item.
+
+    if edges is None:
+        raise NotImplementedError
+
+    n_hops = max(edges)
+    item = next(iter(edges[0]))[1]  # item first edge added and last element element.
+    user = next(iter(edges[n_hops]))[0]  # user last edge added and first element.
+
+    def get_sid(eid, aos_set, is_user=True):
+        sentiments = eval_method.sentiment.user_sentiment[eid] if is_user else \
+            eval_method.sentiment.item_sentiment[eid]
+
+        sids = list({sid for _, sid in sentiments.items() if aos_set.intersection(sent_aos[sid])})
+        arg = torch.argmax(torch.max(attention[sids], dim=1)[0]).cpu().item()
+        return sids[arg]
+
+    # todo: get item reviews and user reviews with matching AOS.
+    num_items = eval_method.train_set.num_items
+    if n_hops == 1:
+        item_sid = get_sid(item, {e[0] for e in edges[0]}, False)
+        user_sid = get_sid(user-num_items, {e[1] for e in edges[1]})
+        return user_sid, item_sid
+
+    # find best item review
+    # find users
+    users = list({u-num_items for u, _ in edges[1]})
+    sids = [eval_method.sentiment.item_sentiment[item][uid] for uid in users]
+    arg = torch.argmax(torch.max(attention[sids], dim=1)[0]).cpu().item()
+    item_sid = sids[arg]
+    hop_user = users[arg]+num_items
+
+
+    # Limit edges
+    def limit_edges(es, start, position, start_set):
+        increment = 0
+        es[start] = {e for e in es[start] if e[position] in start_set}
+        while True:
+            increment += 1
+            change = False
+            if (cur_pos := start + increment) in es:
+                cur_set = {e[0] for e in edges[cur_pos-1]}
+                es[cur_pos] = {e for e in es[cur_pos] if e[1] in cur_set}
+                change = True
+
+            if (cur_pos := start - increment) in es:
+                cur_set = {e[1] for e in edges[cur_pos+1]}
+                es[cur_pos] = {e for e in es[cur_pos] if e[0] in cur_set}
+                change = True
+
+            if not change:
+                break
+
+        return es
+
+    edges = limit_edges(edges, 1, 0, {hop_user})
+
+
+    user_sid = get_sid(user-num_items, {e[1] for e in edges[n_hops]}, True)
+    other_sid = get_sid(hop_user-num_items, {e[1] for e in edges[n_hops]}, True)
+
+    return user_sid, other_sid, item_sid
+
+
+def all_dist(eval_method, match):
+    sentiment = eval_method.sentiment
+    aos_user, aos_item, _, user_aos, item_aos, _ = dicts(sentiment, match)
+    dist = np.zeros((eval_method.train_set.num_items, eval_method.train_set.num_users))
+
+    for item in tqdm(list(range(eval_method.train_set.num_items))):
+        mask = np.ones((eval_method.train_set.num_users, ), )
+
+        # Users directly connected to item by rating
+        users = list(sentiment.item_sentiment[item].keys())
+        mask[users] = 0
+
+        # Users directly connected to item by element
+        elements = item_aos[item]
+        users = [u for e in elements for u in aos_user[e]]
+        mask[users] = 0
+
+        # Users connected with one hop
+        aos = [e for uid in sentiment.item_sentiment[item].keys() for e in user_aos[uid]]
+        users = [user for e in aos for user in aos_user[e]]
+        dist[item][users] = 1  # Represent one hop
+        mask[users] = 0
+        dist[item][mask.astype(bool)] = 2  # At least two hops
+
+    return dist
+
+
 def lightrla_overlap(eval_method, model, user, item, hackjob=True):
     # Get paths
     hops, edges = all_paths(eval_method, user, item)
@@ -229,18 +444,110 @@ def lightrla_overlap(eval_method, model, user, item, hackjob=True):
     pass
 
 
+def draw_reviews(eval_method, sids, user, item, match):
+    aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos, a_mapping, o_mapping\
+        = dicts(eval_method.sentiment, match, True)
+    num_items = eval_method.train_set.num_items
+    num_users = eval_method.train_set.num_users
+    num_aspects = eval_method.sentiment.num_aspects
+    user_sid = {sid: (uid, iid) for uid, isid in eval_method.sentiment.user_sentiment.items()
+                for iid, sid in isid.items()}
+    item_sid = {eval_method.sentiment.item_sentiment[item].values()}
+
+    def mapping(eid, type):
+        if type == 'i':
+            return eid
+        elif type == 'u':
+            return eid + num_items
+        elif type == 'a':
+            return eid + num_items + num_users
+        else:
+            return eid + num_items + num_users + num_aspects
+
+    edges = set()
+    for sid in sids:
+        for (a, o, s) in eval_method.sentiment.sentiment[sid]:
+            uid, iid = user_sid[sid]
+            a, o = mapping(a_mapping[a], 'a'), mapping(o_mapping[o], 'o')
+            uid = mapping(uid, 'u')
+            edges.add((uid, a, 0))
+            edges.add((a, o, s))
+            edges.add((iid, a, 0))
+
+    G = nx.Graph()
+    for s, d, l in edges:
+        G.add_edge(s, d)
+
+    e_labels = {(s, d): l for s, d, l in edges if l != 0}
+
+    color_map = []
+    for node in G:
+        if node == user + num_items:
+            color_map.append('purple')
+        elif node == item:
+            color_map.append('silver')
+        elif node < num_items:
+            color_map.append('blue')
+        elif node < num_items + num_users:
+            color_map.append('green')
+        elif node < num_items + num_users + num_aspects:
+            color_map.append('yellow')
+        else:
+            color_map.append('red')
+    labels = {}
+    id_aspect_map = {a_mapping[v]: k for k, v in reversed(eval_method.sentiment.aspect_id_map.items())}
+    id_opinion_map = {o_mapping[v]: k for k, v in reversed(eval_method.sentiment.opinion_id_map.items())}
+    for node in G:
+        if node < num_items + num_users:
+            labels[node] = str(node)
+        elif node < num_items + num_users + num_aspects:
+            labels[node] = id_aspect_map[node - num_items - num_users]
+        else:
+            labels[node] = id_opinion_map[node - num_items - num_users - num_aspects]
+    pos = nx.spring_layout(G, k=2/math.sqrt(G.order()), iterations=20)
+    nx.draw(G, node_color=color_map, labels=labels, with_labels=True, pos=pos)
+    nx.draw_networkx_edge_labels(G, pos=pos, edge_labels=e_labels)
+    plt.show()
+    pass
+
+
+
+
+
 def run(path, dataset, method):
     eval_method = utils.initialize_dataset(dataset)
     model = utils.initialize_model(path, dataset, method)
 
+    # test = all_dist(eval_method, 'a')
+
     # Iter test
+    res = []
+    lengths = []
     for user, item in tqdm(list(zip(*eval_method.test_set.csr_matrix.nonzero()))):
         review_aos = set()
         if method == 'lightrla':
-            out = lightrla_overlap(eval_method, model, user, item)
+            # out = lightrla_overlap(eval_method, model, user, item)
+            # r = reverse_match(user, item, eval_method.sentiment, 'aos')
+            r = reverse_path(eval_method, user, item, 'a')
+            sids = get_reviews(eval_method, model, r, 'a')
+            if sids is not None:
+                draw_reviews(eval_method, sids, user, item, 'a')
+
+
+            if isinstance(r, tuple):
+                r, lu, li = r
+                lengths.append([lu, li])
+
+            res.append(r)
         else:
             raise NotImplementedError
     # Get paths
+    res = np.array(res)
+    lengths = np.array(lengths)
+
+    for i in range(0, 10):
+        print(f'>={i}: all    {sum((lengths[:, 0] >= i) * (lengths[:, 1] >= i))}')
+        print(f'>={i}: failed {sum((lengths[:, 0] >= i) * (lengths[:, 1] >= i) * (res == 2))}')
 
     pass
 
