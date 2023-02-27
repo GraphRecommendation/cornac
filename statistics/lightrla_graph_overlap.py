@@ -139,6 +139,7 @@ def limit_edges_to_best_user(edges, model, eval_method, user):
 
 @lru_cache()
 def dicts(sentiment, match, get_ao_mappings=False):
+    # Initialize all variables
     sent, a_mapping, o_mapping = stem(sentiment)
     # sent = sentiment.sentiment
     aos_user = defaultdict(list)
@@ -147,6 +148,8 @@ def dicts(sentiment, match, get_ao_mappings=False):
     user_aos = defaultdict(list)
     item_aos = defaultdict(list)
     sent_aos = defaultdict(list)
+
+    # Iterate over all sentiment triples and create the corresponding mapping for users and items.
     for uid, isid in sentiment.user_sentiment.items():
         for iid, sid in isid.items():
             for a, o, s in sent[sid]:
@@ -209,8 +212,9 @@ def reverse_match(user, item, sentiment, match='a'):
 def reverse_path(eval_method, user, item, match):
     sentiment = eval_method.sentiment
     num_items = eval_method.train_set.num_items
-    aos_user, aos_item, _, user_aos, item_aos, _ = dicts(sentiment, match)
+    aos_user, aos_item, _, user_aos, item_aos, _ = dicts(sentiment, match)  # Get mappings
 
+    # Get one hop entities
     dst = user_aos[user]
     src = item_aos[item]
 
@@ -218,21 +222,27 @@ def reverse_path(eval_method, user, item, match):
     edges[0].update((s, item) for s in src)
     index = 1
 
-    # Direct connection to item
+    # Direct connection to item, i.e., user has mentioned entities which is used to describe item
     if any([s in dst for s in src]):
-        edges[index].update((user+num_items, d) for d in dst if d in src)
-        edges[0] = {e for e in edges[0] if e[0] in dst}
+        edges[index].update((user+num_items, d) for d in dst if d in src)  # Add user edges
+        edges[0] = {e for e in edges[0] if e[0] in dst}  # prune
         return edges
 
-    # Get one hop users
+    # Get one hop users. I.e., users sharing an entity with the item.
+    # Get users that rated item and extract edges to the item's entities.
     edges[index].update([(uid+num_items, e) for uid in sentiment.item_sentiment[item].keys()
                   for e in user_aos[uid] if e in src])
     index += 1
+    # Get edges to next layer of entities.
     edges[index].update([(e, uid) for (uid, _) in edges[index - 1] for e in user_aos[uid-num_items]])
     index += 1
 
+    # Extract most distant entities.
     ndst = {e[0] for e in edges[index - 1]}
+
+    # Check if any are shared with user
     if any(d in ndst for d in dst):
+        # Get edges to entities
         edges[index].update([(user+num_items, e) for (e, _) in edges[index - 1] if e in dst])
 
         # Prune edges.
@@ -249,7 +259,7 @@ def reverse_path(eval_method, user, item, match):
 
 
 def get_reviews(eval_method, model, edges, match, hackjob=True):
-    aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos = dicts(eval_method.sentiment, match)
+    aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos = dicts(eval_method.sentiment, match)  # Get mappings
 
     # Get review attention.
     if hackjob:
@@ -258,19 +268,19 @@ def get_reviews(eval_method, model, edges, match, hackjob=True):
     else:
         raise NotImplementedError
 
-    # Get most relevant review for item.
-
+    # No solution when no edges were found.
     if edges is None:
         raise NotImplementedError
 
+    # Get user and item
     n_hops = max(edges)
     item = next(iter(edges[0]))[1]  # item first edge added and last element element.
     user = next(iter(edges[n_hops]))[0]  # user last edge added and first element.
 
+    # Method for getting sentiment triple id.
     def get_sid(eid, aos_set, is_user=True):
         sentiments = eval_method.sentiment.user_sentiment[eid] if is_user else \
             eval_method.sentiment.item_sentiment[eid]
-
         sids = list({sid for _, sid in sentiments.items() if aos_set.intersection(sent_aos[sid])})
         arg = torch.argmax(torch.max(attention[sids], dim=1)[0]).cpu().item()
         return sids[arg]
@@ -282,16 +292,16 @@ def get_reviews(eval_method, model, edges, match, hackjob=True):
         user_sid = get_sid(user-num_items, {e[1] for e in edges[1]})
         return user_sid, item_sid
 
-    # find best item review
-    # find users
+    # Get one hop users.
     users = list({u-num_items for u, _ in edges[1]})
     sids = [eval_method.sentiment.item_sentiment[item][uid] for uid in users]
+
+    # Get user with the highest attention
     arg = torch.argmax(torch.max(attention[sids], dim=1)[0]).cpu().item()
     item_sid = sids[arg]
     hop_user = users[arg]+num_items
 
-
-    # Limit edges
+    # Function pruning edges after selecting a node.
     def limit_edges(es, start, position, start_set):
         increment = 0
         es[start] = {e for e in es[start] if e[position] in start_set}
@@ -313,9 +323,10 @@ def get_reviews(eval_method, model, edges, match, hackjob=True):
 
         return es
 
+    # Start at hop 1, first (0'th) element of tuple, with one hop user: hop_user.
     edges = limit_edges(edges, 1, 0, {hop_user})
 
-
+    # Get user sentiment, other user sentiment, and item sentiment.
     user_sid = get_sid(user-num_items, {e[1] for e in edges[n_hops]}, True)
     other_sid = get_sid(hop_user-num_items, {e[1] for e in edges[n_hops]}, True)
 
