@@ -22,7 +22,7 @@ def statistics(eval_method, actual_review, data, item_wise=True):
         if item_wise:
             rid = rids[-1]
         else:
-            raise NotImplementedError
+            rid = rids[0]
 
         # get review
         selected = eval_method.review_text.reviews[rid]

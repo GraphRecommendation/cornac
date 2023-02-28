@@ -46,7 +46,7 @@ def run(path, dataset, method, draw=False, rerun=False):
                 res.append(r)
             elif method == 'narre':
                 rids = narre_graph_overlap.get_reviews(eval_method, model, 'a')
-                uis = (user, item, tuple(rids[item]))
+                uis.append((user, item, tuple(rids[item])))
             else:
                 raise NotImplementedError
 
@@ -68,5 +68,10 @@ def run(path, dataset, method, draw=False, rerun=False):
 
 
 if __name__ == '__main__':
-    path, dataset, method = sys.argv[1:]
-    run(path, dataset, method)
+    if len(sys.argv) == 4:
+        path, dataset, method = sys.argv[1:]
+        rerun = False
+    else:
+        path, dataset, method, rerun = sys.argv[1:]
+        rerun = bool(rerun)
+    run(path, dataset, method, rerun=rerun)
