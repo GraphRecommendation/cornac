@@ -1,9 +1,12 @@
 import argparse
 import os
 import pickle
+from collections import defaultdict
 
 import evaluate
+import latextable
 import pandas as pd
+from texttable import Texttable
 from tqdm import tqdm
 
 from statistics import utils
@@ -30,9 +33,10 @@ def statistics(eval_method, actual_review, data, item_wise=True):
     pred = [p for _, p in compare]
 
     results = {}
-    for metric in ['rouge', 'meteor']:
+    for metric in ['rouge', 'meteor', 'bleu']:
         m = evaluate.load(metric)
-        results[metric] = m.compute(predictions=pred, references=target)
+        metric_name = metric if metric != 'rouge' else 'rouge1'
+        results[metric] = m.compute(predictions=pred, references=target)[metric_name]
 
     return results
 
@@ -66,11 +70,14 @@ def extract_test_reviews(df, eval_method):
 
 
 def run(datasets, methods, data_path='experiment/seer-ijcai2020/'):
+    all_results = {}
     for dataset in datasets:
+        all_results[dataset] = {}
         eval_method = utils.initialize_dataset(dataset)
         df = pd.read_csv(os.path.join('experiment', 'seer-ijcai2020', dataset, 'profile.csv'), sep=',')
         ui_review = extract_test_reviews(df, eval_method)
         for method in methods:
+
             fname = f'statistics/output/selected_reviews_{dataset}_{method}.pickle'
 
             # Load
@@ -79,10 +86,30 @@ def run(datasets, methods, data_path='experiment/seer-ijcai2020/'):
 
             data = extract_rid(eval_method, data)
 
-            results = statistics(eval_method, ui_review, data)
+            all_results[dataset][method] = statistics(eval_method, ui_review, data)
 
+        # table = Texttable()
+        # results = all_results[dataset]
+        # metrics = list(next(iter(all_results[dataset].values())).keys())
+        # methods_res = [[method] + [results[method][metric] for metric in metrics] for method in methods]
+        # data = [[''] + metrics,
+        #         *methods_res]
+        #
+        # table.add_rows(data)
+        # table.draw()
+        # latextable.draw_latex(table, caption=f'Results for dataset {dataset}')
 
+    data2 = defaultdict(list)
+    for dataset, method_res in all_results.items():
+        for method, res in method_res.items():
+            for metric, r in res.items():
+                data2[dataset].append(r)
+                data2['method'].append(method)
+                data2['metric'].append(metric)
 
+    df2 = pd.DataFrame(data2)
+    print(df2.set_index('method').pivot(columns='metric').rename_axis(None, axis=0))
+    # Todo create latex table
 
 
 if __name__ == '__main__':
