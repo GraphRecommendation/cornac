@@ -49,7 +49,7 @@ def initialize_dataset(dataset):
     return eval_method
 
 
-METHOD_NAMES = {'lightrla': 'LightRLA', 'lightgcn': 'lightgcn', 'light2': 'light2'}
+METHOD_NAMES = {'lightrla': 'LightRLA', 'lightgcn': 'lightgcn', 'light2': 'light2', 'narre': 'NARRE_BPR'}
 
 
 def initialize_model(path, dataset, method):
