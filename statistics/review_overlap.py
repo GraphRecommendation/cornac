@@ -72,20 +72,25 @@ def extract_test_reviews(df, eval_method):
 def run(datasets, methods, data_path='experiment/seer-ijcai2020/'):
     all_results = {}
     for dataset in datasets:
+        print(f'----{dataset}----')
         all_results[dataset] = {}
         eval_method = utils.initialize_dataset(dataset)
         df = pd.read_csv(os.path.join('experiment', 'seer-ijcai2020', dataset, 'profile.csv'), sep=',')
         ui_review = extract_test_reviews(df, eval_method)
         for method in methods:
-
+            print(f'--{method}--')
             fname = f'statistics/output/selected_reviews_{dataset}_{method}.pickle'
 
             # Load
             with open(fname, 'rb') as f:
                 data = pickle.load(f)
 
-            data = extract_rid(eval_method, data)
+            if method == 'lightrla':
+                data = extract_rid(eval_method, data)
+            else:
+                pass
 
+            print('Calculating statistics')
             all_results[dataset][method] = statistics(eval_method, ui_review, data)
 
         # table = Texttable()

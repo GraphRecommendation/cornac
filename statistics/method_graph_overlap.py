@@ -5,7 +5,7 @@ import sys
 import numpy as np
 from tqdm import tqdm
 
-from statistics import utils
+from statistics import utils, lightrla_graph_overlap, narre_graph_overlap
 from statistics.lightrla_graph_overlap import reverse_path, get_reviews, draw_reviews
 
 
@@ -33,7 +33,7 @@ def run(path, dataset, method, draw=False, rerun=False):
                 # TODO fix, should not be none or better handling
                 if r is None:
                     continue
-                sids = get_reviews(eval_method, model, r, 'a')
+                sids = lightrla_graph_overlap.get_reviews(eval_method, model, r, 'a')
                 uis.append((user, item, sids))
 
                 if sids is not None and draw:
@@ -45,12 +45,13 @@ def run(path, dataset, method, draw=False, rerun=False):
 
                 res.append(r)
             elif method == 'narre':
-                pass
+                rids = narre_graph_overlap.get_reviews(eval_method, model, 'a')
+                uis = (user, item, tuple(rids[item]))
             else:
                 raise NotImplementedError
 
         # Get paths
-        res = np.array(res)
+        # res = np.array(res)
         # lengths = np.array(lengths)
 
         # for i in range(0, 10):
