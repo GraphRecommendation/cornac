@@ -1,11 +1,18 @@
 import argparse
+import gc
 import os
 import pickle
+import time
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
 
 import evaluate
-import latextable
+import waitGPU as waitGPU
+from numba import cuda
+import tensorflow as tf
+import numpy as np
 import pandas as pd
+import torch.cuda
 from texttable import Texttable
 from tqdm import tqdm
 
@@ -16,7 +23,33 @@ parser.add_argument('--methods', nargs='+')
 parser.add_argument('--data_path', type=str)
 
 
-def statistics(eval_method, actual_review, data, item_wise=True):
+def test(metric, pred, target):
+    m = evaluate.load(metric)
+
+    if metric == 'rouge':
+        metric_name = 'rougeL'
+    elif metric == 'bertscore':
+        metric_name = 'f1'
+    elif metric == 'bleurt':
+        metric_name = 'scores'
+    else:
+        metric_name = metric
+
+    kwargs = {'predictions': pred, 'references': target}
+
+    if metric in ['bertscore']:
+        kwargs['lang'] = 'en'
+
+    with torch.no_grad():
+        rs = m.compute(**kwargs)[metric_name]
+
+    if metric in ['bertscore', 'bleurt']:
+        rs = np.mean(rs)
+
+    return rs
+
+
+def statistics(eval_method, actual_review, data, item_wise=True, mask=None):
     compare = []
     for (uid, iid, rids) in data:
         if item_wise:
@@ -32,11 +65,22 @@ def statistics(eval_method, actual_review, data, item_wise=True):
     target = [t for t, _ in compare]
     pred = [p for _, p in compare]
 
+    if mask is not None:
+        target, pred = np.array(target), np.array(pred)
+        target, pred = target[mask], pred[mask]
+        target, pred = target.tolist(), pred.tolist()
+
     results = {}
-    for metric in ['rouge', 'meteor', 'bleu']:
-        m = evaluate.load(metric)
-        metric_name = metric if metric != 'rouge' else 'rouge1'
-        results[metric] = m.compute(predictions=pred, references=target)[metric_name]
+    metrics = ['rouge', 'meteor', 'bleu', 'bertscore', 'bleurt']
+    for metric in tqdm(metrics, desc='Calculating metrics'):
+        # only for proper cuda clearing
+        with ProcessPoolExecutor(max_workers=1) as e:
+            f = e.submit(test, metric, pred, target)
+        rs = f.result()
+
+        results[metric] = rs
+
+        waitGPU.wait(memory_ratio=.5)
 
     return results
 
@@ -71,6 +115,8 @@ def extract_test_reviews(df, eval_method):
 
 def run(datasets, methods, data_path='experiment/seer-ijcai2020/'):
     all_results = {}
+    mask = None
+    ui_pairs = None
     for dataset in datasets:
         print(f'----{dataset}----')
         all_results[dataset] = {}
@@ -87,11 +133,14 @@ def run(datasets, methods, data_path='experiment/seer-ijcai2020/'):
 
             if method == 'lightrla':
                 data = extract_rid(eval_method, data)
+                # mask = [len(e[-1]) > 2 for e in data]
+                ui_pairs = {(u, i) for u, i, _ in data}
             else:
-                pass
+                data = [d for d in data if d[:2] in ui_pairs]
 
             print('Calculating statistics')
-            all_results[dataset][method] = statistics(eval_method, ui_review, data)
+            all_results[dataset][method] = statistics(eval_method, ui_review, data, item_wise=True, mask=mask)
+            old_d = data
 
         # table = Texttable()
         # results = all_results[dataset]
@@ -118,5 +167,7 @@ def run(datasets, methods, data_path='experiment/seer-ijcai2020/'):
 
 
 if __name__ == '__main__':
+    # os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+
     args = parser.parse_args()
     run(**vars(args))
