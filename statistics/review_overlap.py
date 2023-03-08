@@ -99,6 +99,10 @@ def statistics(eval_method, actual_review, data, item_wise=True, mask=None):
     target = [t for t, _ in compare]
     pred = [p for _, p in compare]
 
+    # Count number of words in pred and target
+    tl, pl = [sum([len(sentence.split(' ')) for sentence in l]) for l in [target, pred]]
+    print(f'Avg. target len: {tl / len(target)}, pred len: {pl/ len(pred)}')
+
     if mask is not None:
         target, pred = np.array(target), np.array(pred)
         target, pred = target[mask], pred[mask]
