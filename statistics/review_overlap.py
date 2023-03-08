@@ -13,6 +13,8 @@ import tensorflow as tf
 import numpy as np
 import pandas as pd
 import torch.cuda
+from rouge_score import rouge_scorer, scoring
+from rouge_score.scoring import AggregateScore
 from texttable import Texttable
 from tqdm import tqdm
 
@@ -23,28 +25,60 @@ parser.add_argument('--methods', nargs='+')
 parser.add_argument('--data_path', type=str)
 
 
-def test(metric, pred, target):
-    m = evaluate.load(metric)
+def rouge_all_res(predictions, references, rouge_types=None, use_aggregator=True, use_stemmer=False,
+                  tokenizer=None):
+    if rouge_types is None:
+        rouge_types = ["rouge1", "rouge2", "rougeL", "rougeLsum"]
 
-    if metric == 'rouge':
-        metric_name = 'rougeL'
-    elif metric == 'bertscore':
-        metric_name = 'f1'
-    elif metric == 'bleurt':
-        metric_name = 'scores'
+    multi_ref = isinstance(references[0], list)
+
+    scorer = rouge_scorer.RougeScorer(rouge_types=rouge_types, use_stemmer=use_stemmer, tokenizer=tokenizer)
+    if use_aggregator:
+        aggregator = scoring.BootstrapAggregator()
     else:
-        metric_name = metric
+        scores = []
 
-    kwargs = {'predictions': pred, 'references': target}
+    for ref, pred in zip(references, predictions):
+        if multi_ref:
+            score = scorer.score_multi(ref, pred)
+        else:
+            score = scorer.score(ref, pred)
+        if use_aggregator:
+            aggregator.add_scores(score)
+        else:
+            scores.append(score)
+
+    if use_aggregator:
+        result = aggregator.aggregate()
+
+    else:
+        result = scores
+
+    return result
+
+
+def test(metric, pred, target):
+    waitGPU.wait(memory_ratio=.5, interval=2)
+    if metric in ['bleu']:
+        target = [[t] for t in target]
+    kwargs = {'predictions': pred[:100], 'references': target[:100]}
+
+    if metric.startswith('meteor'):
+        metric, alpha = metric.split('_')
+        kwargs['alpha'] = float(alpha)
 
     if metric in ['bertscore']:
         kwargs['lang'] = 'en'
 
-    with torch.no_grad():
-        rs = m.compute(**kwargs)[metric_name]
+    m = evaluate.load(metric)
+
+    if metric == 'rouge':
+        rs = rouge_all_res(**kwargs)
+    else:
+        rs = m.compute(**kwargs)
 
     if metric in ['bertscore', 'bleurt']:
-        rs = np.mean(rs)
+        rs = {r: np.mean(s) for r, s in rs.items() if isinstance(s, list)}
 
     return rs
 
@@ -71,16 +105,27 @@ def statistics(eval_method, actual_review, data, item_wise=True, mask=None):
         target, pred = target.tolist(), pred.tolist()
 
     results = {}
-    metrics = ['rouge', 'meteor', 'bleu', 'bertscore', 'bleurt']
+    metrics = ['rouge', 'meteor_0.9', 'meteor_0.1', 'bleu', 'bertscore', 'bleurt']
+    # metrics = ['bleu', 'bertscore', 'bleurt']
     for metric in tqdm(metrics, desc='Calculating metrics'):
         # only for proper cuda clearing
         with ProcessPoolExecutor(max_workers=1) as e:
+            # rs = test(metric, pred, target)
             f = e.submit(test, metric, pred, target)
         rs = f.result()
 
-        results[metric] = rs
-
-        waitGPU.wait(memory_ratio=.5)
+        if metric not in ['bleu']:
+            for m, r in rs.items():
+                if isinstance(r, AggregateScore):
+                    for percentile, i in zip(r._fields, range(len(r))):
+                        for s, j in zip(r[i]._fields, range(len(r[i]))):
+                            results[f'{m}-{percentile}-{s}'] = r[i][j]
+                elif metric == 'bertscore':
+                    results[f'{metric}-{m}'] = r
+                else:
+                    results[f'{metric}'] = r
+        else:
+            results[metric] = rs[metric]
 
     return results
 
@@ -140,18 +185,6 @@ def run(datasets, methods, data_path='experiment/seer-ijcai2020/'):
 
             print('Calculating statistics')
             all_results[dataset][method] = statistics(eval_method, ui_review, data, item_wise=True, mask=mask)
-            old_d = data
-
-        # table = Texttable()
-        # results = all_results[dataset]
-        # metrics = list(next(iter(all_results[dataset].values())).keys())
-        # methods_res = [[method] + [results[method][metric] for metric in metrics] for method in methods]
-        # data = [[''] + metrics,
-        #         *methods_res]
-        #
-        # table.add_rows(data)
-        # table.draw()
-        # latextable.draw_latex(table, caption=f'Results for dataset {dataset}')
 
     data2 = defaultdict(list)
     for dataset, method_res in all_results.items():
@@ -162,7 +195,9 @@ def run(datasets, methods, data_path='experiment/seer-ijcai2020/'):
                 data2['metric'].append(metric)
 
     df2 = pd.DataFrame(data2)
-    print(df2.set_index('method').pivot(columns='metric').rename_axis(None, axis=0))
+    df3 = df2.set_index('method').pivot(columns='metric').rename_axis(None, axis=0)
+    print(df3)
+    df3.to_csv(os.path.join('statistics/output/', f'review_scores_{"_".join(datasets)}_{"_".join(methods)}.csv'))
     # Todo create latex table
 
 
