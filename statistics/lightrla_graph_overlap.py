@@ -258,6 +258,34 @@ def reverse_path(eval_method, user, item, match):
         return None
 
 
+def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology='weighted', weighting='attention'):
+    aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos = dicts(eval_method.sentiment, match)  # Get mappings
+
+    # Get review attention.
+    if hackjob:
+        with torch.no_grad():
+            attention = extract_attention(model.model, model.node_review_graph, model.device)
+    else:
+        raise NotImplementedError
+
+    # No solution when no edges were found.
+    if edges is None:
+        raise NotImplementedError
+
+    # Contruct nx graph
+
+    # assign weights and edge identifiers
+    # if attention use attention, if similarity, assign user similarity as weight
+
+    # Methodology
+    # If weighted find the shortest weighted path
+    # If user, greedy selection from user
+    # If item, greedy selection from item
+
+    #  return selected reviews.
+    return None
+
+
 def get_reviews(eval_method, model, edges, match, hackjob=True):
     aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos = dicts(eval_method.sentiment, match)  # Get mappings
 
@@ -375,8 +403,6 @@ def lightrla_overlap(eval_method, model, user, item, hackjob=True):
     if hackjob:
         with torch.no_grad():
             attention = extract_attention(model.model, model.node_review_graph, model.device)
-
-
     else:
         raise NotImplementedError
 

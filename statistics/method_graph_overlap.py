@@ -25,7 +25,6 @@ def run(path, dataset, method, draw=False, rerun=False):
     uis = []
     if (not os.path.isfile(fname)) or rerun:
         for user, item in tqdm(list(zip(*eval_method.test_set.csr_matrix.nonzero()))):
-            review_aos = set()
             if method == 'lightrla':
                 # out = lightrla_overlap(eval_method, model, user, item)
                 # r = reverse_match(user, item, eval_method.sentiment, 'aos')
