@@ -23,20 +23,20 @@ def run(path, dataset, method, draw=False, rerun=False):
     res = []
     # lengths = []
     uis = []
+    matching_method = 'a'
     if (not os.path.isfile(fname)) or rerun:
         for user, item in tqdm(list(zip(*eval_method.test_set.csr_matrix.nonzero()))):
             if method == 'lightrla':
-                # out = lightrla_overlap(eval_method, model, user, item)
-                # r = reverse_match(user, item, eval_method.sentiment, 'aos')
                 r = reverse_path(eval_method, user, item, 'a')
                 # TODO fix, should not be none or better handling
                 if r is None:
                     continue
-                sids = lightrla_graph_overlap.get_reviews(eval_method, model, r, 'a')
+                tmp = lightrla_graph_overlap.get_reviews_nwx(eval_method, model, r, matching_method)
+                sids = lightrla_graph_overlap.get_reviews(eval_method, model, r, matching_method)
                 uis.append((user, item, sids))
 
                 if sids is not None and draw:
-                    draw_reviews(eval_method, sids, user, item, 'a')
+                    draw_reviews(eval_method, sids, user, item, matching_method)
 
                 # if isinstance(r, tuple):
                 #     r, lu, li = r
@@ -44,7 +44,7 @@ def run(path, dataset, method, draw=False, rerun=False):
 
                 res.append(r)
             elif method == 'narre':
-                rids = narre_graph_overlap.get_reviews(eval_method, model, 'a')
+                rids = narre_graph_overlap.get_reviews(eval_method, model, matching_method)
                 uis.append((user, item, tuple(rids[item])))
             else:
                 raise NotImplementedError

@@ -258,7 +258,8 @@ def reverse_path(eval_method, user, item, match):
         return None
 
 
-def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology='weighted', weighting='attention'):
+def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology='weighted', weighting='attention',
+                    aggregator=np.mean):
     aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos = dicts(eval_method.sentiment, match)  # Get mappings
 
     # Get review attention.
@@ -272,10 +273,59 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
     if edges is None:
         raise NotImplementedError
 
+    def get_sids(nid, aoss, is_user):
+        mapping = eval_method.sentiment.user_sentiment if is_user else eval_method.sentiment.item_sentiment
+        possible_sids = {sid for aos in aoss for sid in aos_sent[aos]}
+        sids = [sid for _, sid in mapping[nid].items() if sid in possible_sids]
+        return sids
+
+    NUM_SENT = len(sent_aos)
+    def create_edges(nid, sids, atts, agg, is_user):
+        sids = list(sids)
+        atts = [agg(atts[sid+NUM_SENT if is_user else sid]) for sid in sids]
+        if is_user:
+            nid += n_items
+        es = [(nid, sid) for sid in sids]
+        data = [(e, {'weight': w, 'sid': sid}) for e, w, sid in zip(es, atts, sids)]
+        return data
+
     # Contruct nx graph
+    e_length = len(edges)
+    n_items = eval_method.train_set.num_items
+    n_users_items = n_items + eval_method.train_set.num_users
+    # goes backwards
+    data = []
+    for h in range(0, e_length, 2):
+        _, dst = next(iter(edges[h]))
+        src, _ = next(iter(edges[h+1]))
+        aoss = {aos for aos, _ in edges[h]}
+        if h != 0:
+            dst -= n_items
+        src -= n_items
+
+        src_sids = get_sids(dst, aoss, is_user=h != 0)  # only an item on the first hop
+        dst_sids = get_sids(src, aoss, is_user=True)
+        if h == 0:
+            # we know h == 0
+            data.append(create_edges(dst, dst_sids, attention, aggregator, False))
+        elif h % 4 == 0:
+            pass
+        else:
+            pass
+        data.append(create_edges(src, src_sids, attention, aggregator, True))
+
+
+
+
+
+
 
     # assign weights and edge identifiers
     # if attention use attention, if similarity, assign user similarity as weight
+
+    # If only one path (or less) then just return weights
+    # if g.number_of_nodes() - 1 <= g.number_of_edges():
+    #     pass
 
     # Methodology
     # If weighted find the shortest weighted path
