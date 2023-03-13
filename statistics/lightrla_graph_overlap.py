@@ -265,7 +265,7 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
     # Get review attention.
     if hackjob:
         with torch.no_grad():
-            attention = extract_attention(model.model, model.node_review_graph, model.device)
+            attention = extract_attention(model.model, model.node_review_graph, model.device).cpu().numpy()
     else:
         raise NotImplementedError
 
@@ -275,18 +275,16 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
 
     def get_sids(nid, aoss, is_user):
         mapping = eval_method.sentiment.user_sentiment if is_user else eval_method.sentiment.item_sentiment
-        possible_sids = {sid for aos in aoss for sid in aos_sent[aos]}
-        sids = [sid for _, sid in mapping[nid].items() if sid in possible_sids]
+        sids = {aos: [sid for _, sid in mapping[nid].items() if sid in aos_sent[aos]] for aos in aoss }
+        sids = OrderedDict(sids)
         return sids
 
     NUM_SENT = len(sent_aos)
-    def create_edges(nid, sids, atts, agg, is_user):
-        sids = list(sids)
-        atts = [agg(atts[sid+NUM_SENT if is_user else sid]) for sid in sids]
-        if is_user:
-            nid += n_items
-        es = [(nid, sid) for sid in sids]
-        data = [(e, {'weight': w, 'sid': sid}) for e, w, sid in zip(es, atts, sids)]
+    def create_edges(nid, aos_sids, atts, agg, is_user):
+        # Get attention and aggregate across heads.
+        atts = {aos: {sid: agg(atts[sid + NUM_SENT if is_user else sid]) for sid in sids}
+                for aos, sids in aos_sids.items()}
+        data = [((nid, aos), {'weight': atts[aos][sid], 'sid': sid}) for aos, sids in aos_sids.items() for sid in sids]
         return data
 
     # Contruct nx graph
@@ -300,25 +298,24 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
         src, _ = next(iter(edges[h+1]))
         aoss = {aos for aos, _ in edges[h]}
         if h != 0:
-            dst -= n_items
-        src -= n_items
+            dst_inner = dst - n_items
+        else:
+            dst_inner = dst
 
-        src_sids = get_sids(dst, aoss, is_user=h != 0)  # only an item on the first hop
-        dst_sids = get_sids(src, aoss, is_user=True)
+        src_inner = src - n_items
+
+        dst_sids = get_sids(dst_inner, aoss, is_user=h != 0)  # only an item on the first hop
+        src_sids = get_sids(src_inner, aoss, is_user=True)
         if h == 0:
             # we know h == 0
-            data.append(create_edges(dst, dst_sids, attention, aggregator, False))
+            data.extend(create_edges(dst, dst_sids, attention, aggregator, False))
         elif h % 4 == 0:
             pass
         else:
             pass
-        data.append(create_edges(src, src_sids, attention, aggregator, True))
 
-
-
-
-
-
+        # Source is always a user
+        data.extend(create_edges(src, src_sids, attention, aggregator, True))
 
     # assign weights and edge identifiers
     # if attention use attention, if similarity, assign user similarity as weight
