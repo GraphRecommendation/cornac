@@ -17,9 +17,9 @@ def run(path, dataset, method, draw=False, rerun=False):
     # Get dataset and model
     eval_method = utils.initialize_dataset(dataset)
     matching_method = 'a'
-    methodology = 'weighting'
+    methodology = 'greedy_user'
     model = utils.initialize_model(path, dataset, method)
-    fname = f'statistics/output/selected_reviews_{dataset}_{method}_{matching_method}_{methodology}_{position}.pickle'
+    fname = f'statistics/output/selected_reviews_{dataset}_{method}_{matching_method}_{methodology}.pickle'
 
     # Iter test
     res = []

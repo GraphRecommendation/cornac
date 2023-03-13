@@ -360,6 +360,34 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
 
     if methodology == 'weighted':
         path = nx.shortest_path(g, source=user, target=item, weight='weight')
+    elif methodology in ['greedy_user', 'greedy_item']:
+        if methodology == 'greedy_user':
+            source, target = user, item
+        else:
+            source, target = item, user
+
+        cur_length = e_length
+        paths = set({tuple(p) for p in nx.all_simple_paths(g, source, target, cur_length)})
+        path = []
+        while len(paths) > 1:
+            paths = list(sorted(paths))
+            cur_node = next(iter(paths))[0]
+            path.append(cur_node)
+            dst_nodes = [p[1] for p in paths]
+            p_w = {}
+            for i, dst in enumerate(dst_nodes):
+                info = g[cur_node][dst]
+                e = sorted(info, key=lambda x: info[x]['weight'])[0]
+                p_w[i] = info[e]['weight']
+            p = sorted(p_w, key=p_w.get)[0]
+            cur_length -= 1
+            paths = nx.shortest_path(g, source=dst_nodes[p], target=target, weight='weight')
+            if isinstance(paths[0], list):
+                paths = set({tuple(p) for p in paths})
+            else:
+                paths = [paths]
+
+        path.extend(list(paths.pop()))
     else:
         raise NotImplementedError
 
