@@ -138,7 +138,7 @@ def limit_edges_to_best_user(edges, model, eval_method, user):
     return edges
 
 @lru_cache()
-def dicts(sentiment, match, get_ao_mappings=False):
+def dicts(sentiment, match, get_ao_mappings=False, get_sent_edge_mappings=False):
     # Initialize all variables
     sent, a_mapping, o_mapping = stem(sentiment)
     # sent = sentiment.sentiment
@@ -148,10 +148,15 @@ def dicts(sentiment, match, get_ao_mappings=False):
     user_aos = defaultdict(list)
     item_aos = defaultdict(list)
     sent_aos = defaultdict(list)
+    user_sent_edge_map = dict()
+    item_sent_edge_map = dict()
 
     # Iterate over all sentiment triples and create the corresponding mapping for users and items.
+    edge_id = -1
     for uid, isid in sentiment.user_sentiment.items():
         for iid, sid in isid.items():
+            user_sent_edge_map[(sid, uid)] = (edge_id := edge_id + 1)  # assign and increment
+            item_sent_edge_map[(sid, iid)] = (edge_id := edge_id + 1)
             for a, o, s in sent[sid]:
                 if match == 'aos':
                     element = (a, o, s)
@@ -167,19 +172,26 @@ def dicts(sentiment, match, get_ao_mappings=False):
                 item_aos[iid].append(element)
                 sent_aos[sid].append(element)
 
-    if not get_ao_mappings:
-        return aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos
-    else:
-        return aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos, a_mapping, o_mapping
+    return_data = [aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos]
+
+    if get_ao_mappings:
+        return_data.extend([a_mapping, o_mapping])
+
+    if get_sent_edge_mappings:
+        return_data.extend([user_sent_edge_map, item_sent_edge_map])
+
+    return tuple(return_data)
 
 
 def stem(sentiment):
     from gensim.parsing import stem_text
     ao_preprocess_fn = lambda x: stem_text(re.sub(r'--+.*|-+$', '', x))
+    import random
+    random.seed(42)
     a_id_new = {i: ao_preprocess_fn(e) for e, i in sentiment.aspect_id_map.items()}
     o_id_new = {i: ao_preprocess_fn(e) for e, i in sentiment.opinion_id_map.items()}
-    a_id = {e: i for i, e in enumerate(set(a_id_new.values()))}
-    o_id = {e: i for i, e in enumerate(set(o_id_new.values()))}
+    a_id = {e: i for i, e in enumerate(sorted(set(a_id_new.values())))}
+    o_id = {e: i for i, e in enumerate(sorted(set(o_id_new.values())))}
     a_o_n = {i: a_id[e] for i, e in a_id_new.items()}
     o_o_n = {i: o_id[e] for i, e in o_id_new.items()}
 
@@ -212,7 +224,7 @@ def reverse_match(user, item, sentiment, match='a'):
 def reverse_path(eval_method, user, item, match):
     sentiment = eval_method.sentiment
     num_items = eval_method.train_set.num_items
-    aos_user, aos_item, _, user_aos, item_aos, _ = dicts(sentiment, match)  # Get mappings
+    aos_user, aos_item, _, user_aos, item_aos, sent_aos = dicts(sentiment, match)  # Get mappings
 
     # Get one hop entities
     dst = user_aos[user]
@@ -260,7 +272,11 @@ def reverse_path(eval_method, user, item, match):
 
 def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology='weighted', weighting='attention',
                     aggregator=np.mean):
-    aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos = dicts(eval_method.sentiment, match)  # Get mappings
+    aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos, user_sent_edge_map, item_sent_edge_map = \
+        dicts(eval_method.sentiment, match, get_sent_edge_mappings=True)  # Get mappings
+    e_length = len(edges)
+    n_items = eval_method.train_set.num_items
+    n_users_items = n_items + eval_method.train_set.num_users
 
     # Get review attention.
     if hackjob:
@@ -279,43 +295,44 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
         sids = OrderedDict(sids)
         return sids
 
-    NUM_SENT = len(sent_aos)
-    def create_edges(nid, aos_sids, atts, agg, is_user):
+    def create_edges(nid, nid_inner, aos_sids, atts, agg, is_user):
+        edge_map = user_sent_edge_map if is_user else item_sent_edge_map
         # Get attention and aggregate across heads.
-        atts = {aos: {sid: agg(atts[sid + NUM_SENT if is_user else sid]) for sid in sids}
+        atts = {aos: {sid: agg(atts[edge_map[(sid, nid_inner)]]) for sid in sids}
                 for aos, sids in aos_sids.items()}
-        data = [((nid, aos), {'weight': atts[aos][sid], 'sid': sid}) for aos, sids in aos_sids.items() for sid in sids]
+
+        # 1-att for shortest path but is highest weight.
+        data = [(nid, aos+n_users_items, {'weight': 1-atts[aos][sid], 'sid': sid}) for aos, sids in aos_sids.items() for sid in sids]
         return data
 
-    # Contruct nx graph
-    e_length = len(edges)
-    n_items = eval_method.train_set.num_items
-    n_users_items = n_items + eval_method.train_set.num_users
+    # Construct nx graph
     # goes backwards
     data = []
     for h in range(0, e_length, 2):
-        _, dst = next(iter(edges[h]))
-        src, _ = next(iter(edges[h+1]))
-        aoss = {aos for aos, _ in edges[h]}
-        if h != 0:
-            dst_inner = dst - n_items
-        else:
-            dst_inner = dst
+        aoss = sorted({aos for aos, _ in edges[h]})
+        dsts = sorted({dst for (_, dst) in edges[h]})
+        srcs = sorted({src for (src, _) in edges[h+1]})
+        pairs = list(itertools.product(srcs, dsts))
+        for src, dst in pairs:  # naive path
+            if h != 0:
+                dst_inner = dst - n_items
+            else:
+                dst_inner = dst
 
-        src_inner = src - n_items
+            src_inner = src - n_items
 
-        dst_sids = get_sids(dst_inner, aoss, is_user=h != 0)  # only an item on the first hop
-        src_sids = get_sids(src_inner, aoss, is_user=True)
-        if h == 0:
-            # we know h == 0
-            data.extend(create_edges(dst, dst_sids, attention, aggregator, False))
-        elif h % 4 == 0:
-            pass
-        else:
-            pass
+            dst_sids = get_sids(dst_inner, aoss, is_user=h != 0)  # only an item on the first hop
+            src_sids = get_sids(src_inner, aoss, is_user=True)
+            if h == 0:
+                # we know h == 0
+                data.extend(create_edges(dst, dst_inner, dst_sids, attention, aggregator, False))
+            # elif h % 4 == 0:
+            #     pass
+            else:
+                data.extend(create_edges(dst, dst_inner, dst_sids, attention, aggregator, True))
 
-        # Source is always a user
-        data.extend(create_edges(src, src_sids, attention, aggregator, True))
+            # Source is always a user
+            data.extend(create_edges(src, src_inner, src_sids, attention, aggregator, True))
 
     # assign weights and edge identifiers
     # if attention use attention, if similarity, assign user similarity as weight
@@ -329,8 +346,33 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
     # If user, greedy selection from user
     # If item, greedy selection from item
 
+    # create graph
+    g = nx.MultiGraph()
+    g.add_edges_from(data)
+
+    # Get user and item
+    _, item = next(iter(edges[0]))
+    user, _ = next(iter(edges[max(edges)]))
+
+    tmp = defaultdict(lambda: defaultdict(dict))
+    for src, dst, info in data:
+        tmp[src][dst][info['sid']] = info['weight']
+
+    if methodology == 'weighted':
+        path = nx.shortest_path(g, source=user, target=item, weight='weight')
+    else:
+        raise NotImplementedError
+
+    p_g = nx.path_graph(path)
+    sids = []
+    _weights = []
+    for src, dst in p_g.edges():
+        options = {e['sid']: e['weight'] for e in g.adj[src][dst].values()}
+        sids.append(sorted(options, key=options.get)[0])
+        _weights.append(options[sids[-1]])
+
     #  return selected reviews.
-    return None
+    return sids
 
 
 def get_reviews(eval_method, model, edges, match, hackjob=True):

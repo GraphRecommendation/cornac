@@ -16,23 +16,26 @@ def get_intersecting_reviews():
 def run(path, dataset, method, draw=False, rerun=False):
     # Get dataset and model
     eval_method = utils.initialize_dataset(dataset)
+    matching_method = 'a'
+    methodology = 'weighting'
     model = utils.initialize_model(path, dataset, method)
-    fname = f'statistics/output/selected_reviews_{dataset}_{method}.pickle'
+    fname = f'statistics/output/selected_reviews_{dataset}_{method}_{matching_method}_{methodology}_{position}.pickle'
 
     # Iter test
     res = []
     # lengths = []
     uis = []
-    matching_method = 'a'
     if (not os.path.isfile(fname)) or rerun:
         for user, item in tqdm(list(zip(*eval_method.test_set.csr_matrix.nonzero()))):
             if method == 'lightrla':
+                t = [s for sent in eval_method.sentiment.item_sentiment[item].values() for s in eval_method.sentiment.sentiment[sent]]
                 r = reverse_path(eval_method, user, item, 'a')
                 # TODO fix, should not be none or better handling
                 if r is None:
                     continue
-                tmp = lightrla_graph_overlap.get_reviews_nwx(eval_method, model, r, matching_method)
-                sids = lightrla_graph_overlap.get_reviews(eval_method, model, r, matching_method)
+                sids = lightrla_graph_overlap.get_reviews_nwx(eval_method, model, r, matching_method,
+                                                              methodology=methodology)
+                # sids = lightrla_graph_overlap.get_reviews(eval_method, model, r, matching_method)
                 uis.append((user, item, sids))
 
                 if sids is not None and draw:
