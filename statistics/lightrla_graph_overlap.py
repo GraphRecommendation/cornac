@@ -367,10 +367,10 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
             source, target = item, user
 
         cur_length = e_length
-        paths = set({tuple(p) for p in nx.all_simple_paths(g, source, target, cur_length)})
+        paths = list(nx.all_shortest_paths(g, user, item))
+
         path = []
         while len(paths) > 1:
-            paths = list(sorted(paths))
             cur_node = next(iter(paths))[0]
             path.append(cur_node)
             dst_nodes = [p[1] for p in paths]
@@ -381,13 +381,12 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
                 p_w[i] = info[e]['weight']
             p = sorted(p_w, key=p_w.get)[0]
             cur_length -= 1
-            paths = nx.shortest_path(g, source=dst_nodes[p], target=target, weight='weight')
-            if isinstance(paths[0], list):
-                paths = set({tuple(p) for p in paths})
-            else:
+            paths = list(nx.all_shortest_paths(g, source=dst_nodes[p], target=target))
+            if not isinstance(paths[0], list):
                 paths = [paths]
 
         path.extend(list(paths.pop()))
+        # assert path == nx.shortest_path(g, source=user, target=item, weight='weight')
     else:
         raise NotImplementedError
 
