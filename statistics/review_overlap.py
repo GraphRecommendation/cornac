@@ -16,6 +16,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--datasets', nargs='+')
 parser.add_argument('--methods', nargs='+')
 parser.add_argument('--data_path', type=str)
+parser.add_argument('--file_args', default='', type=str)
 
 
 def rouge_all_res(predictions, references, rouge_types=None, use_aggregator=True, use_stemmer=False,
@@ -153,7 +154,7 @@ def extract_test_reviews(df, eval_method):
     return ui_review
 
 
-def run(datasets, methods, data_path='experiment/seer-ijcai2020/'):
+def run(datasets, methods, data_path='experiment/seer-ijcai2020/', file_args=''):
     all_results = {}
     mask = None
     ui_pairs = None
@@ -165,7 +166,11 @@ def run(datasets, methods, data_path='experiment/seer-ijcai2020/'):
         ui_review = extract_test_reviews(df, eval_method)
         for method in methods:
             print(f'--{method}--')
-            fname = f'statistics/output/selected_reviews_{dataset}_{method}.pickle'
+            if method == 'lightrla':
+                fname = f'statistics/output/selected_reviews_{dataset}_{method}' \
+                        f'{"_" + file_args if file_args else ""}.pickle'
+            else:
+                fname = f'statistics/output/selected_reviews_{dataset}_{method}.pickle'
 
             # Load
             with open(fname, 'rb') as f:
@@ -192,7 +197,9 @@ def run(datasets, methods, data_path='experiment/seer-ijcai2020/'):
     df2 = pd.DataFrame(data2)
     df3 = df2.set_index('method').pivot(columns='metric').rename_axis(None, axis=0)
     print(df3)
-    df3.to_csv(os.path.join('statistics/output/', f'review_scores_{"_".join(datasets)}_{"_".join(methods)}.csv'))
+    df3.to_csv(os.path.join('statistics/output/',
+                            f'review_scores_{"_".join(datasets)}_{"_".join(methods)}'
+                            f'{"_" + file_args if file_args else file_args}.csv'))
     # Todo create latex table
 
 
