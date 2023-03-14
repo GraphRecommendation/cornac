@@ -6,7 +6,7 @@ import numpy as np
 from tqdm import tqdm
 
 from statistics import utils, lightrla_graph_overlap, narre_graph_overlap
-from statistics.lightrla_graph_overlap import reverse_path, get_reviews, draw_reviews
+from statistics.lightrla_graph_overlap import reverse_path, draw_reviews
 
 
 def get_intersecting_reviews():

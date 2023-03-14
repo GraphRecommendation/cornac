@@ -1,21 +1,14 @@
 import argparse
-import gc
 import os
 import pickle
-import time
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 
 import evaluate
-import waitGPU as waitGPU
-from numba import cuda
-import tensorflow as tf
 import numpy as np
 import pandas as pd
-import torch.cuda
 from rouge_score import rouge_scorer, scoring
 from rouge_score.scoring import AggregateScore
-from texttable import Texttable
 from tqdm import tqdm
 
 from statistics import utils
@@ -57,8 +50,7 @@ def rouge_all_res(predictions, references, rouge_types=None, use_aggregator=True
     return result
 
 
-def test(metric, pred, target):
-    waitGPU.wait(memory_ratio=.5, interval=2)
+def compute_metric(metric, pred, target):
     if metric in ['bleu']:
         target = [[t] for t in target]
     kwargs = {'predictions': pred[:100], 'references': target[:100]}
@@ -70,11 +62,10 @@ def test(metric, pred, target):
     if metric in ['bertscore']:
         kwargs['lang'] = 'en'
 
-    m = evaluate.load(metric)
-
     if metric == 'rouge':
         rs = rouge_all_res(**kwargs)
     else:
+        m = evaluate.load(metric)
         rs = m.compute(**kwargs)
 
     if metric in ['bertscore', 'bleurt']:
@@ -112,10 +103,10 @@ def statistics(eval_method, actual_review, data, item_wise=True, mask=None):
     metrics = ['rouge', 'meteor_0.9', 'meteor_0.1', 'bleu', 'bertscore', 'bleurt']
     # metrics = ['bleu', 'bertscore', 'bleurt']
     for metric in tqdm(metrics, desc='Calculating metrics'):
-        # only for proper cuda clearing
+        # only create new proces for proper cuda clearing
         with ProcessPoolExecutor(max_workers=1) as e:
             # rs = test(metric, pred, target)
-            f = e.submit(test, metric, pred, target)
+            f = e.submit(compute_metric, metric, pred, target)
         rs = f.result()
 
         if metric not in ['bleu']:
