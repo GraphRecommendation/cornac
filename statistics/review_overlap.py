@@ -21,6 +21,7 @@ parser.add_argument('--file_args', default='', type=str)
 
 def rouge_all_res(predictions, references, rouge_types=None, use_aggregator=True, use_stemmer=False,
                   tokenizer=None):
+    np.random.seed(42)
     if rouge_types is None:
         rouge_types = ["rouge1", "rouge2", "rougeL", "rougeLsum"]
 
