@@ -588,6 +588,58 @@ def lightrla_overlap(eval_method, model, user, item, hackjob=True):
     pass
 
 
+@lru_cache()
+def sid_to_rid_mapping(eval_method):
+    sid_rid_map = OrderedDict()
+    for user, isid in eval_method.sentiment.user_sentiment.items():
+        for item, sid in isid.items():
+            sid_rid_map[sid] = eval_method.review_text.user_review[user][item]
+
+    rid_sid_map = {v: k for k, v in sid_rid_map.items()}
+    return sid_rid_map, rid_sid_map
+
+def id_mapping(eval_method, eid, type):
+    num_items = eval_method.train_set.num_items
+    num_users = eval_method.train_set.num_users
+    num_aspects = eval_method.sentiment.num_aspects
+
+    if type == 'i':
+        return eid
+    elif type == 'u':
+        return eid + num_items
+    elif type == 'a':
+        return eid + num_items + num_users
+    else:
+        return eid + num_items + num_users + num_aspects
+
+
+def sid_to_graphs(eval_method, uis, match):
+    aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos, a_mapping, o_mapping\
+        = dicts(eval_method.sentiment, match, True)
+    sid_user_item_mapping = {sid: (uid, iid) for uid, isid in eval_method.sentiment.user_sentiment.items()
+                for iid, sid in isid.items()}
+    # item_sid = {eval_method.sentiment.item_sentiment[item].values()}
+
+
+    uig = []
+    for uid, iid, sids in uis:
+        edges = list()
+        for sid in sids:
+            for (a, o, s) in eval_method.sentiment.sentiment[sid]:
+                inner_uid, inner_iid = sid_user_item_mapping[sid]
+                a, o = id_mapping(eval_method, a_mapping[a], 'a'), id_mapping(eval_method, o_mapping[o], 'o')
+                inner_uid = id_mapping(eval_method, inner_uid, 'u')
+                edges.append((inner_uid, a, {'sentiment': 0}))
+                edges.append((a, o, {'sentiment': s}))
+                edges.append((inner_iid, a, {'sentiment': 0}))
+
+        g = nx.MultiGraph()
+        g.add_edges_from(edges)
+        uig.append((uid, iid, g))
+
+    return uig
+
+
 def draw_reviews(eval_method, sids, user, item, match):
     aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos, a_mapping, o_mapping\
         = dicts(eval_method.sentiment, match, True)
