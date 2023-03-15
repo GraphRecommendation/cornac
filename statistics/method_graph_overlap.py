@@ -28,22 +28,16 @@ def run(path, dataset, method, draw=False, rerun=False):
     if (not os.path.isfile(fname)) or rerun:
         for user, item in tqdm(list(zip(*eval_method.test_set.csr_matrix.nonzero()))):
             if method == 'lightrla':
-                t = [s for sent in eval_method.sentiment.item_sentiment[item].values() for s in eval_method.sentiment.sentiment[sent]]
                 r = reverse_path(eval_method, user, item, 'a')
                 # TODO fix, should not be none or better handling
                 if r is None:
                     continue
                 sids = lightrla_graph_overlap.get_reviews_nwx(eval_method, model, r, matching_method,
                                                               methodology=methodology)
-                # sids = lightrla_graph_overlap.get_reviews(eval_method, model, r, matching_method)
                 uis.append((user, item, sids))
 
                 if sids is not None and draw:
                     draw_reviews(eval_method, sids, user, item, matching_method)
-
-                # if isinstance(r, tuple):
-                #     r, lu, li = r
-                #     lengths.append([lu, li])
 
                 res.append(r)
             elif method == 'narre':
@@ -51,14 +45,6 @@ def run(path, dataset, method, draw=False, rerun=False):
                 uis.append((user, item, tuple(rids[item])))
             else:
                 raise NotImplementedError
-
-        # Get paths
-        # res = np.array(res)
-        # lengths = np.array(lengths)
-
-        # for i in range(0, 10):
-        #     print(f'>={i}: all    {sum((lengths[:, 0] >= i) * (lengths[:, 1] >= i))}')
-        #     print(f'>={i}: failed {sum((lengths[:, 0] >= i) * (lengths[:, 1] >= i) * (res == 2))}')
 
         print('Writing reviews to disk.')
         with open(fname, 'wb') as f:

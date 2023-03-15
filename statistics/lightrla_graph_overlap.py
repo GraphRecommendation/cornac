@@ -337,15 +337,6 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
     # assign weights and edge identifiers
     # if attention use attention, if similarity, assign user similarity as weight
 
-    # If only one path (or less) then just return weights
-    # if g.number_of_nodes() - 1 <= g.number_of_edges():
-    #     pass
-
-    # Methodology
-    # If weighted find the shortest weighted path
-    # If user, greedy selection from user
-    # If item, greedy selection from item
-
     # create graph
     g = nx.MultiGraph()
     g.add_edges_from(data)
@@ -354,32 +345,38 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
     _, item = next(iter(edges[0]))
     user, _ = next(iter(edges[max(edges)]))
 
-    tmp = defaultdict(lambda: defaultdict(dict))
-    for src, dst, info in data:
-        tmp[src][dst][info['sid']] = info['weight']
-
+    # Weighted is the best path taking both user, item, and intermediary paths into account.
+    # Greedy always takes the best first, while still ensuring it is the shortest (unweighted) path.
     if methodology == 'weighted':
         path = nx.shortest_path(g, source=user, target=item, weight='weight')
     elif methodology in ['greedy_user', 'greedy_item']:
+        # Get source and target
         if methodology == 'greedy_user':
             source, target = user, item
         else:
             source, target = item, user
 
+        # get possible paths
         cur_length = e_length
-        paths = list(nx.all_shortest_paths(g, user, item))
+        paths = list(nx.all_shortest_paths(g, source, target))
 
-        path = []
+        path = []  # is the actual path selected
         while len(paths) > 1:
-            cur_node = next(iter(paths))[0]
+            cur_node = next(iter(paths))[0]  # node is always the first
             path.append(cur_node)
-            dst_nodes = [p[1] for p in paths]
+            dst_nodes = [p[1] for p in paths]  # get all possible 'next node'
+
+            # Get best weight for next nodes
             p_w = {}
             for i, dst in enumerate(dst_nodes):
                 info = g[cur_node][dst]
                 e = sorted(info, key=lambda x: info[x]['weight'])[0]
                 p_w[i] = info[e]['weight']
+
+            # Select best
             p = sorted(p_w, key=p_w.get)[0]
+
+            # Get remaining paths given selected. Note, not efficient, but fine for one run.
             cur_length -= 1
             paths = list(nx.all_shortest_paths(g, source=dst_nodes[p], target=target))
             if not isinstance(paths[0], list):
