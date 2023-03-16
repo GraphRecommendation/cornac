@@ -27,7 +27,7 @@ def run(path, dataset, method, draw=False, rerun=False):
     # lengths = []
     uis = []
     uig = None
-    if not os.path.isfile(review_fname) or rerun:
+    if (not os.path.isfile(review_fname) or rerun) and method not in ['kgat']:
         for user, item in tqdm(list(zip(*eval_method.test_set.csr_matrix.nonzero()))):
             if method == 'lightrla':
                 r = reverse_path(eval_method, user, item, 'a')
@@ -45,21 +45,13 @@ def run(path, dataset, method, draw=False, rerun=False):
             elif method == 'narre':
                 rids = narre_graph_overlap.get_reviews(eval_method, model, matching_method)
                 uis.append((user, item, tuple(rids[item])))
-            elif method == 'kgat':
-                lightrla_fname = review_fname.replace(method, 'lightrla')
-                assert os.path.isfile(lightrla_fname), 'This method is dependant on LightRLA (for' \
-                                                                          'fair comparison). Please run with lightrla' \
-                                                                          'before kgat.'
-                lightrla_data = kgat_graph_overlap.load_data(lightrla_fname)
-                rids = kgat_graph_overlap.get_reviews(eval_method, model, lightrla_data)
-                uis.append((user, item, tuple(rids[item])))
             else:
                 raise NotImplementedError
 
         print('Writing reviews to disk.')
         with open(review_fname, 'wb') as f:
             pickle.dump(uis, f)
-    else:
+    elif method not in ['kgat']:
         with open(review_fname, 'rb') as f:
             uis = pickle.load(f)
 
@@ -67,7 +59,12 @@ def run(path, dataset, method, draw=False, rerun=False):
     if method == 'lightrla':
         uig = lightrla_graph_overlap.sid_to_graphs(eval_method, uis, matching_method)
     elif method == 'kgat':
-        raise NotImplementedError
+        lightrla_fname = graph_fname.replace(method, 'lightrla')
+        assert os.path.isfile(lightrla_fname), 'This method is dependant on LightRLA (for' \
+                                                                  'fair comparison). Please run with lightrla' \
+                                                                  'before kgat.'
+        lightrla_data = kgat_graph_overlap.load_data(lightrla_fname)
+        uig = kgat_graph_overlap.get_reviews(eval_method, model, lightrla_data)
 
     if uig is not None:
         with open(graph_fname, 'wb') as f:

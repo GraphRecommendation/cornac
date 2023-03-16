@@ -11,6 +11,7 @@ from matplotlib import pyplot as plt
 from tqdm import tqdm
 
 from cornac.models.lightrla.dgl_utils import extract_attention
+from statistics.utils import id_mapping
 
 
 def draw_test(edges):
@@ -597,20 +598,6 @@ def sid_to_rid_mapping(eval_method):
 
     rid_sid_map = {v: k for k, v in sid_rid_map.items()}
     return sid_rid_map, rid_sid_map
-
-def id_mapping(eval_method, eid, type):
-    num_items = eval_method.train_set.num_items
-    num_users = eval_method.train_set.num_users
-    num_aspects = eval_method.sentiment.num_aspects
-
-    if type == 'i':
-        return eid
-    elif type == 'u':
-        return eid + num_items
-    elif type == 'a':
-        return eid + num_items + num_users
-    else:
-        return eid + num_items + num_users + num_aspects
 
 
 def sid_to_graphs(eval_method, uis, match):

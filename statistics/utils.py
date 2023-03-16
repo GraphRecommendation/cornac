@@ -12,6 +12,21 @@ from cornac.data import SentimentModality, ReviewModality, Reader
 from cornac.datasets import amazon_cellphone_seer, amazon_computer_seer
 
 
+def id_mapping(eval_method, eid, type):
+    num_items = eval_method.train_set.num_items
+    num_users = eval_method.train_set.num_users
+    num_aspects = eval_method.sentiment.num_aspects
+
+    if type == 'i':
+        return eid
+    elif type == 'u':
+        return eid + num_items
+    elif type == 'a':
+        return eid + num_items + num_users
+    else:
+        return eid + num_items + num_users + num_aspects
+
+
 def initialize_dataset(dataset):
     if dataset == 'cellphone':
         feedback = amazon_cellphone_seer.load_feedback(fmt="UIRT", reader=Reader())
@@ -49,7 +64,8 @@ def initialize_dataset(dataset):
     return eval_method
 
 
-METHOD_NAMES = {'lightrla': 'LightRLA', 'lightgcn': 'lightgcn', 'light2': 'light2', 'narre': 'NARRE_BPR'}
+METHOD_NAMES = {'lightrla': 'LightRLA', 'lightgcn': 'lightgcn', 'light2': 'light2', 'narre': 'NARRE_BPR',
+                'kgat': 'KGAT'}
 
 
 def initialize_model(path, dataset, method):
