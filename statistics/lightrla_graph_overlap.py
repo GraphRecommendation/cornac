@@ -11,7 +11,7 @@ from matplotlib import pyplot as plt
 from tqdm import tqdm
 
 from cornac.models.lightrla.dgl_utils import extract_attention
-from statistics.utils import id_mapping
+from statistics.utils import id_mapping, generate_mappings
 
 
 def draw_test(edges):
@@ -138,73 +138,9 @@ def limit_edges_to_best_user(edges, model, eval_method, user):
 
     return edges
 
-@lru_cache()
-def dicts(sentiment, match, get_ao_mappings=False, get_sent_edge_mappings=False):
-    # Initialize all variables
-    sent, a_mapping, o_mapping = stem(sentiment)
-    # sent = sentiment.sentiment
-    aos_user = defaultdict(list)
-    aos_item = defaultdict(list)
-    aos_sent = defaultdict(list)
-    user_aos = defaultdict(list)
-    item_aos = defaultdict(list)
-    sent_aos = defaultdict(list)
-    user_sent_edge_map = dict()
-    item_sent_edge_map = dict()
-
-    # Iterate over all sentiment triples and create the corresponding mapping for users and items.
-    edge_id = -1
-    for uid, isid in sentiment.user_sentiment.items():
-        for iid, sid in isid.items():
-            user_sent_edge_map[(sid, uid)] = (edge_id := edge_id + 1)  # assign and increment
-            item_sent_edge_map[(sid, iid)] = (edge_id := edge_id + 1)
-            for a, o, s in sent[sid]:
-                if match == 'aos':
-                    element = (a, o, s)
-                elif match == 'a':
-                    element = a
-                else:
-                    raise NotImplementedError
-
-                aos_user[element].append(uid)
-                aos_item[element].append(iid)
-                aos_sent[element].append(sid)
-                user_aos[uid].append(element)
-                item_aos[iid].append(element)
-                sent_aos[sid].append(element)
-
-    return_data = [aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos]
-
-    if get_ao_mappings:
-        return_data.extend([a_mapping, o_mapping])
-
-    if get_sent_edge_mappings:
-        return_data.extend([user_sent_edge_map, item_sent_edge_map])
-
-    return tuple(return_data)
-
-
-def stem(sentiment):
-    from gensim.parsing import stem_text
-    ao_preprocess_fn = lambda x: stem_text(re.sub(r'--+.*|-+$', '', x))
-    import random
-    random.seed(42)
-    a_id_new = {i: ao_preprocess_fn(e) for e, i in sentiment.aspect_id_map.items()}
-    o_id_new = {i: ao_preprocess_fn(e) for e, i in sentiment.opinion_id_map.items()}
-    a_id = {e: i for i, e in enumerate(sorted(set(a_id_new.values())))}
-    o_id = {e: i for i, e in enumerate(sorted(set(o_id_new.values())))}
-    a_o_n = {i: a_id[e] for i, e in a_id_new.items()}
-    o_o_n = {i: o_id[e] for i, e in o_id_new.items()}
-
-    s = OrderedDict()
-    for i, aos in sentiment.sentiment.items():
-        s[i] = [(a_o_n[a], o_o_n[o], s) for a, o, s in aos]
-
-    return s, a_o_n, o_o_n
-
 
 def reverse_match(user, item, sentiment, match='a'):
-    aos_user, aos_item, _, user_aos, item_aos, _ = dicts(sentiment, match)
+    aos_user, aos_item, _, user_aos, item_aos, _ = generate_mappings(sentiment, match)
 
     dst = user_aos[user]
     src = item_aos[item]
@@ -225,7 +161,7 @@ def reverse_match(user, item, sentiment, match='a'):
 def reverse_path(eval_method, user, item, match):
     sentiment = eval_method.sentiment
     num_items = eval_method.train_set.num_items
-    aos_user, aos_item, _, user_aos, item_aos, sent_aos = dicts(sentiment, match)  # Get mappings
+    aos_user, aos_item, _, user_aos, item_aos, sent_aos = generate_mappings(sentiment, match)  # Get mappings
 
     # Get one hop entities
     dst = user_aos[user]
@@ -274,7 +210,7 @@ def reverse_path(eval_method, user, item, match):
 def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology='weighted', weighting='attention',
                     aggregator=np.mean):
     aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos, user_sent_edge_map, item_sent_edge_map = \
-        dicts(eval_method.sentiment, match, get_sent_edge_mappings=True)  # Get mappings
+        generate_mappings(eval_method.sentiment, match, get_sent_edge_mappings=True)  # Get mappings
     e_length = len(edges)
     n_items = eval_method.train_set.num_items
     n_users_items = n_items + eval_method.train_set.num_users
@@ -401,7 +337,7 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
 
 
 def get_reviews(eval_method, model, edges, match, hackjob=True):
-    aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos = dicts(eval_method.sentiment, match)  # Get mappings
+    aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos = generate_mappings(eval_method.sentiment, match)  # Get mappings
 
     # Get review attention.
     if hackjob:
@@ -477,7 +413,7 @@ def get_reviews(eval_method, model, edges, match, hackjob=True):
 
 def all_dist(eval_method, match):
     sentiment = eval_method.sentiment
-    aos_user, aos_item, _, user_aos, item_aos, _ = dicts(sentiment, match)
+    aos_user, aos_item, _, user_aos, item_aos, _ = generate_mappings(sentiment, match)
     dist = np.zeros((eval_method.train_set.num_items, eval_method.train_set.num_users))
 
     for item in tqdm(list(range(eval_method.train_set.num_items))):
@@ -602,7 +538,7 @@ def sid_to_rid_mapping(eval_method):
 
 def sid_to_graphs(eval_method, uis, match):
     aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos, a_mapping, o_mapping\
-        = dicts(eval_method.sentiment, match, True)
+        = generate_mappings(eval_method.sentiment, match, True)
     sid_user_item_mapping = {sid: (uid, iid) for uid, isid in eval_method.sentiment.user_sentiment.items()
                 for iid, sid in isid.items()}
     # item_sid = {eval_method.sentiment.item_sentiment[item].values()}
@@ -629,7 +565,7 @@ def sid_to_graphs(eval_method, uis, match):
 
 def draw_reviews(eval_method, sids, user, item, match):
     aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos, a_mapping, o_mapping\
-        = dicts(eval_method.sentiment, match, True)
+        = generate_mappings(eval_method.sentiment, match, True)
     num_items = eval_method.train_set.num_items
     num_users = eval_method.train_set.num_users
     num_aspects = eval_method.sentiment.num_aspects

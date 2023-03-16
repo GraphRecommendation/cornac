@@ -1,146 +1,70 @@
-import sys
-from collections import Counter, defaultdict
+import argparse
+import os
+import pickle
+from collections import OrderedDict
 
-import numpy as np
-from nltk import OrderedDict
-from tqdm import tqdm
+import pandas as pd
 
-from cornac.data.text import BaseTokenizer
-
-from cornac.data import Reader, SentimentModality, ReviewModality
-
-from cornac.datasets import amazon_cellphone_seer, amazon_computer_seer
-from cornac.eval_methods import StratifiedSplit
 from statistics import utils
+from statistics.utils import generate_mappings
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--datasets', nargs='+')
+parser.add_argument('--methods', nargs='+')
+parser.add_argument('--data_path', type=str)
+parser.add_argument('--matching_methodology', type=str)
+parser.add_argument('--file_args', default='', type=str)
 
 
-def get_aos(identifier, exclude, data, sentiment):
-    a = set()
-    o = set()
-    ao = set()
-    aos = set()
-    for other, sid in data[identifier].items():
-        if other != exclude:
-            for triple in sentiment.sentiment[sid]:
-                aos.add(triple)
-                ao.add((triple[0], triple[1]))
-                o.add((triple[1], triple[2]))
-                a.add(triple[0])
+def extract_test_nodes(df, eval_method, match):
+    aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos, a_mapping, o_mapping\
+        = generate_mappings(eval_method.sentiment, match, True)
 
-    return a, o, ao, aos
+    test_nodes = OrderedDict()
+    for (uid, iid), group in df.groupby(['reviewerID', 'asin']):
+        uid, iid = eval_method.global_uid_map[uid], eval_method.global_iid_map[iid]
+        nodes = [uid, iid]
 
+        for r, values in group.iterrows():
+            aid = a_mapping[eval_method.sentiment.aspect_id_map[values['aspect']]]
+            oid = o_mapping[eval_method.sentiment.opinion_id_map[values['opinion']]]
 
-def breadth_first_search(eval_method, user, item):
-    user_aos = {u: {aos for sid in sids.values() for aos in eval_method.sentiment.sentiment[sid]}
-                for u, sids in eval_method.sentiment.user_sentiment.items()}
-    item_aos = {i: {aos for sid in sids.values() for aos in eval_method.sentiment.sentiment[sid]}
-                for i, sids in eval_method.sentiment.item_sentiment.items()}
-    aos_user = defaultdict(set)
-    for u, sids in eval_method.sentiment.user_sentiment.items():
-        for sid in sids.values():
-            for aos in eval_method.sentiment.sentiment[sid]:
-                aos_user[aos].add(u)
+            nodes.append(aid)
+            nodes.append(oid)
 
-    user_item = {u: {i for i in sid.keys()} for u, sid in eval_method.sentiment.user_sentiment.items()}
+        test_nodes[(uid, iid)] = nodes
 
-    dest_aos = item_aos[item]
-    frontier = {user}
-    seen = set()
-    not_found = True
-    hops = 0
-    while not_found:
-        next_set = set()
-        seen.update(frontier)
-        for u in frontier:
-            next_set.update(user_aos[u])
-        if next_set.intersection(dest_aos):
-            not_found = False
-        else:
-            hops += 1
-
-        frontier = set()
-        for aos in next_set:
-            frontier.update(aos_user[aos].difference(seen))
-
-    return hops
+    return test_nodes
 
 
-def run(dataset):
-    eval_method = utils.initialize_dataset(dataset)
+def statistics(eval_method, ui_nodes, data):
+    pass
 
-    # Convert raw data to ids:
-    raw_data = {(eval_method.global_uid_map[u], eval_method.global_iid_map[i]):
-                    [(eval_method.sentiment.aspect_id_map[a], eval_method.sentiment.opinion_id_map[o], s)
-                     for a, o, s in aos if a in eval_method.sentiment.aspect_id_map
-                     and o in eval_method.sentiment.opinion_id_map]
-                for u, i, aos in eval_method.sentiment.raw_data if u in eval_method.global_uid_map
-                and i in eval_method.global_iid_map}
 
-    # Go through test set. Compare user and items aos triplets
-    a_match = []
-    o_match = []
-    ao_match = []
-    aos_match = []
-    intersect = 0
-    no_intersect = 0
-    no_match = 0
-    def similarity(set_a, set_b, set_c):
-        sims = []
-        sims.append(len(set_a.intersection(set_c)) / len(set_a.union(set_c)))
-        sims.append(len(set_b.intersection(set_c)) / len(set_b.union(set_c)))
-        tmp = set_a.intersection(set_b)
-        sims.append(len(tmp.intersection(set_c)) / len(tmp.union(set_c)))
-        return sims
+def run(datasets, methods, data_path='experiment/seer-ijcai2020/', matching_methodology='a', file_args=''):
+    all_results = {}
+    mask = None
+    ui_pairs = None
+    for dataset in datasets:
+        print(f'----{dataset}----')
+        all_results[dataset] = {}
+        eval_method = utils.initialize_dataset(dataset)
+        df = pd.read_csv(os.path.join('experiment', 'seer-ijcai2020', dataset, 'profile.csv'), sep=',')
+        ui_nodes = extract_test_nodes(df, eval_method, matching_methodology)
 
-    id_a = {v: k for k, v in eval_method.sentiment.aspect_id_map.items()}
-    id_o = {v: k for k, v in eval_method.sentiment.opinion_id_map.items()}
-
-    aos_c = Counter([aos for so in eval_method.sentiment.sentiment.values() for aos in so])
-    shared = [any([aos_c[aos] > 1 for aos in so]) for so in eval_method.sentiment.sentiment.values()]
-
-    num_hops = []
-
-    for user, item in tqdm(list(zip(*eval_method.test_set.csr_matrix.nonzero()))):
-        hops = breadth_first_search(eval_method, user, item)
-        num_hops.append(hops)
-        change = False
-        if (aos := raw_data.get((user, item))) is not None and len(aos):
-            aos = [(a, o, float(s)) for a, o, s in aos]
-            a = {a for a, _, _ in aos}
-            o = {(o, s) for _, o, s in aos}
-            ao = {(a, o) for a, o, _ in aos}
-            aos = set(aos)
-            u_a, u_o, u_ao, u_aos = get_aos(user, item, eval_method.sentiment.user_sentiment, eval_method.sentiment)
-            i_a, i_o, i_ao, i_aos = get_aos(item, user, eval_method.sentiment.item_sentiment, eval_method.sentiment)
-            if u_a.intersection(i_a) or u_o.intersection(i_o):
-                intersect += 1
-                a_match.append(similarity(u_a, i_a, a))
-                o_match.append(similarity(u_o, i_o, o))
-                ao_match.append(similarity(u_ao, i_ao, ao))
-                aos_match.append(similarity(u_aos, i_aos, aos))
+        for method in methods:
+            if method == 'lightrla':
+                fname = f'statistics/output/selected_graphs_{dataset}_{method}_{matching_methodology}' \
+                        f'{"_" + file_args if file_args else ""}.pickle'
             else:
-                no_intersect += 1
+                fname = f'statistics/output/selected_graphs_{dataset}_{method}_{matching_methodology}.pickle'
 
-        if not change:
-            no_match += 1
+            # Load
+            with open(fname, 'rb') as f:
+                data = pickle.load(f)
 
-    print(intersect, no_intersect)
-    a_match, o_match, ao_match, aos_match = [np.array(d).T for d in [a_match, o_match, ao_match, aos_match]]
-    for data in [a_match, o_match, ao_match, aos_match]:
-        print(np.mean(data, axis=-1), np.sum(data == 0, axis=-1) / len(data.T))
-
-    print(np.sum((a_match != 0) ^ (o_match != 0), axis=-1) / len(a_match.T))
-
-    num_hops = np.array(num_hops)
-    print(f'mean: {np.mean(num_hops)}\n'
-          f'quan: {np.quantile(num_hops, [0.01, 0.1, 0.5, 0.9, 0.99])}\n'
-          f'medi: {np.median(num_hops)}\n'
-          f'%>1: {sum(num_hops>1)}\n'
-          f'%<1: {sum(num_hops<1)}\n'
-          f'tot: {len(num_hops)}')
-
-    print('hej')
-
+    pass
 
 if __name__ == '__main__':
-    run(sys.argv[1])
+    args = parser.parse_args()
+    run(**vars(args))
