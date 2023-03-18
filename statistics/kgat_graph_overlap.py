@@ -13,7 +13,7 @@ def load_data(fname):
     return d
 
 
-def get_reviews(eval_method, model, lightrla_data):
+def get_reviews(eval_method, model, lightrla_data, path_methodology='lightrla'):
     g = model.train_graph.to_networkx()
     attention = model.train_graph.edata['a']
     attention = {e: 1-v for e, v in zip(g.edges, attention.numpy())}  # attention is inversed so lower is better
@@ -33,7 +33,7 @@ def get_reviews(eval_method, model, lightrla_data):
         # weight paths
         p_w = {}
         for i, p in enumerate(paths):
-            p_w[i] = nx.path_weight(g, p, weight='a')
+            p_w[i] = nx.path_weight(g, p, weight='a') / len(p)  # Longer paths are not better
 
 
         index = -1
