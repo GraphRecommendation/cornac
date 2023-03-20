@@ -2,6 +2,7 @@ import math
 import pickle
 
 import networkx as nx
+import numpy as np
 from tqdm import tqdm
 
 from statistics.utils import id_mapping
@@ -17,11 +18,26 @@ def get_reviews(eval_method, model, lightrla_data, path_methodology='lightrla'):
     g = model.train_graph.to_networkx()
     attention = model.train_graph.edata['a']
     attention = {e: 1-v for e, v in zip(g.edges, attention.numpy())}  # attention is inversed so lower is better
+
+    # Get average number of nodes in train graphs
+    lengths = [len({e for aos in eval_method.sentiment.sentiment[sid] for e in aos[:2]})
+               for iaos in eval_method.sentiment.user_sentiment.values()
+               for sid in iaos.values()]
+    m_length = np.median(lengths) + 2  # Add two to account for user/item
+
     nx.set_edge_attributes(g, attention, 'a')
     g_simple = nx.Graph(g)
     uig = []
     for uid, iid, lrla_g in tqdm(lightrla_data, desc='Generating graphs'):
-        num_nodes = lrla_g.number_of_nodes()
+        # Number of selected nodes can be biased towards different things.
+        # E.g. same as our method or same as train graphs
+        if path_methodology == 'lightrla':
+            num_nodes = lrla_g.number_of_nodes()
+        elif path_methodology == 'median':
+            num_nodes = m_length
+        else:
+            raise NotImplementedError
+
         inner_uid = id_mapping(eval_method, uid, 'u')
 
         # Get only paths using the shortest path length.

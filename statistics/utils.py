@@ -30,6 +30,18 @@ def id_mapping(eval_method, eid, type):
         return eid + num_items + num_users + num_aspects
 
 
+def get_method_paths(method_kwargs, dataset, method):
+    ext = f'{method_kwargs["matching_method"]}_{"_".join(f"{k}_{v}" for k, v in method_kwargs[method].items())}'
+
+    review_fname = f'statistics/output/selected_reviews_{dataset}_{method}_{ext}.pickle'
+
+    # Graph of kgat is dependent on the methodology of lightrla.
+    if method == 'kgat':
+        ext += '_'"_".join(f"{k}_{v}" for k, v in method_kwargs['lightrla'].items())
+
+    graph_fname = f'statistics/output/selected_graphs_{dataset}_{method}_{ext}.pickle'
+    return review_fname, graph_fname
+
 
 def stem(sentiment):
     from gensim.parsing import stem_text

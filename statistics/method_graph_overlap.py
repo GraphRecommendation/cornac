@@ -1,26 +1,27 @@
 import os
 import pickle
-import sys
 
-import numpy as np
+import argparse
 from tqdm import tqdm
 
 from statistics import utils, lightrla_graph_overlap, narre_graph_overlap, kgat_graph_overlap
 from statistics.lightrla_graph_overlap import reverse_path, draw_reviews
+from statistics.utils import get_method_paths
+
+parser = argparse.ArgumentParser()
+parser.add_argument('path', type=str)
+parser.add_argument('dataset')
+parser.add_argument('method')
+parser.add_argument('--rerun', action='store_true')
+parser.add_argument('--method_kwargs', default="{'matching_method':'a'}", type=str)
 
 
-def get_intersecting_reviews():
-    pass
-
-
-def run(path, dataset, method, draw=False, rerun=False):
+def run(path, dataset, method, method_kwargs, draw=False, rerun=False):
     # Get dataset and model
     eval_method = utils.initialize_dataset(dataset)
-    matching_method = 'a'
-    methodology = 'greedy_item'
+    matching_method = method_kwargs['matching_method']
     model = utils.initialize_model(path, dataset, method)
-    review_fname = f'statistics/output/selected_reviews_{dataset}_{method}_{matching_method}_{methodology}.pickle'
-    graph_fname = f'statistics/output/selected_graphs_{dataset}_{method}_{matching_method}_{methodology}.pickle'
+    review_fname, graph_fname = get_method_paths(method_kwargs, dataset, method)
 
     # Iter test
     res = []
@@ -35,7 +36,7 @@ def run(path, dataset, method, draw=False, rerun=False):
                 if r is None:
                     continue
                 sids = lightrla_graph_overlap.get_reviews_nwx(eval_method, model, r, matching_method,
-                                                              methodology=methodology)
+                                                              **method_kwargs[method])
                 uis.append((user, item, sids))
 
                 if sids is not None and draw:
@@ -59,10 +60,10 @@ def run(path, dataset, method, draw=False, rerun=False):
     if method == 'lightrla':
         uig = lightrla_graph_overlap.sid_to_graphs(eval_method, uis, matching_method)
     elif method == 'kgat':
-        lightrla_fname = graph_fname.replace(method, 'lightrla')
-        assert os.path.isfile(lightrla_fname), 'This method is dependant on LightRLA (for' \
-                                                                  'fair comparison). Please run with lightrla' \
-                                                                  'before kgat.'
+        _, lightrla_fname = get_method_paths(method_kwargs, dataset, 'lightrla')
+        assert os.path.isfile(lightrla_fname), 'This method can be dependant on LightRLA (for fair comparison). ' \
+                                               'Please run with lightrla before kgat.'
+
         lightrla_data = kgat_graph_overlap.load_data(lightrla_fname)
         uig = kgat_graph_overlap.get_reviews(eval_method, model, lightrla_data)
 
@@ -75,10 +76,6 @@ def run(path, dataset, method, draw=False, rerun=False):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) == 4:
-        path, dataset, method = sys.argv[1:]
-        rerun = False
-    else:
-        path, dataset, method, rerun = sys.argv[1:]
-        rerun = bool(rerun)
-    run(path, dataset, method, rerun=rerun)
+    args = parser.parse_args()
+    method_kwargs = eval(args.method_kwargs)
+    run(args.path, args.dataset, args.method, rerun=args.rerun, method_kwargs=method_kwargs)
