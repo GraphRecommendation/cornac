@@ -1,4 +1,4 @@
-from collections import OrderedDict
+from collections import OrderedDict, Counter
 from typing import Mapping
 
 import dgl.dataloading
@@ -73,6 +73,8 @@ class HearBlockSampler(dgl.dataloading.NeighborSampler):
         self.aggregator = aggregator
         self.sid_aos = sid_aos
         self.aos_list = torch.LongTensor(aos_list)
+        ac = Counter([a for aos in sid_aos for a in aos.numpy()])
+        self.aos_probabilities = torch.log(torch.FloatTensor([ac.get(a) for a in sorted(ac)]) + 1)
         self.n_neg = n_neg
         self.ui_graph = ui_graph
         self.compact = compact
@@ -156,7 +158,8 @@ class HearBlockSampler(dgl.dataloading.NeighborSampler):
             blocks2.insert(0, block)
 
         # sample aos pos and negative pair.
-        neg_aos = torch.randint(len(self.aos_list), (len(nrg_exclude_eids), self.n_neg), dtype=torch.int64)
+        neg_aos = torch.multinomial(self.aos_probabilities, len(exclude_eids) * self.n_neg, replacement=True)\
+            .reshape(len(exclude_eids), self.n_neg)
         pos_aos = []
         for sid in g.edata['sid'][exclude_eids].cpu().numpy():
             aosid = self.sid_aos[sid]

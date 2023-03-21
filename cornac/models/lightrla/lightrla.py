@@ -14,12 +14,13 @@ class AOSPredictionLayer(nn.Module):
     def __init__(self, in_dim1, in_dim2, hidden_dims, n_relations):
         super().__init__()
         dims = [in_dim1] + hidden_dims
+        max_i = len(dims)
         self.mlp_ao = nn.ModuleList(nn.Sequential(
-            *[nn.Sequential(nn.Linear(dims[i], dims[i+1]), nn.ReLU()) for i in range(len(dims) - 1)]
+            *[nn.Sequential(nn.Linear(dims[i], dims[i+1]), nn.LeakyReLU()) for i in range(max_i - 1)]
         ) for _ in range(n_relations))
         dims = [in_dim2] + hidden_dims
         self.mlp_ui = nn.Sequential(
-            *[nn.Sequential(nn.Linear(dims[i], dims[i+1]), nn.ReLU()) for i in range(len(dims) - 1)]
+            *[nn.Sequential(nn.Linear(dims[i], dims[i+1]), nn.LeakyReLU()) for i in range(max_i - 1)]
         )
         self._n_relations = n_relations
         self._out_dim = hidden_dims[-1]

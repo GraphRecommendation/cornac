@@ -253,11 +253,11 @@ class LightRLA(Recommender):
                         'aspect': (n_items+n_users, n_items+n_users+n_aspects),
                         'opinion': (n_items+n_users+n_aspects, n_items+n_users+n_aspects+n_opinions)}
 
-
         sid_aos = []
         for sid in range(max(train_set.sentiment.sentiment)+1):
             aoss = train_set.sentiment.sentiment.get(sid, [])
-            sid_aos.append([(a2a[a], o2o[o], 0 if s == -1 else 1) for a, o, s in aoss])
+            sid_aos.append([(a2a[a]+n_items+n_users, o2o[o]+n_users+n_items+n_aspects, 0 if s == -1 else 1)
+                            for a, o, s in aoss])
 
         aos_list = sorted({aos for aoss in sid_aos for aos in aoss})
         aos_id = {aos: i for i, aos in enumerate(aos_list)}
@@ -492,7 +492,10 @@ class LightRLA(Recommender):
                                              self.sid_aos, self.aos_list, 5,
                                              self.ui_graph, fanout=self.fanout)
         if self.objective == 'ranking':
-            neg_sampler = cornac.utils.dgl.GlobalUniformItemSampler(self.num_neg_samples, self.train_set.num_items)
+            ic = collections.Counter(self.train_set.matrix.nonzero()[1])
+            probabilitites = torch.FloatTensor([ic.get(i) for i in sorted(ic)])
+            neg_sampler = cornac.utils.dgl.GlobalUniformItemSampler(self.num_neg_samples, self.train_set.num_items,
+                                                                    probabilitites)
         else:
             neg_sampler = None
 
