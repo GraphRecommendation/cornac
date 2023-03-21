@@ -39,7 +39,9 @@ class HEAREdgeSampler(dgl.dataloading.EdgePredictionSampler):
             g, seed_edges, exclude, self.reverse_eids, self.reverse_etypes,
             self.output_device)
 
-        input_nodes, _, blocks = self.sampler.sample(g, seed_nodes, exclude_eids, seed_edges)
+        input_nodes, _, (pos_aos, neg_aos), blocks = self.sampler.sample(g, seed_nodes, exclude_eids, seed_edges)
+        pair_graph.edata['pos'] = pos_aos
+        pair_graph.edata['neg'] = neg_aos
 
         if self.negative_sampler is None:
             return self.assign_lazy_features((input_nodes, pair_graph, blocks))
@@ -48,7 +50,8 @@ class HEAREdgeSampler(dgl.dataloading.EdgePredictionSampler):
 
 
 class HearBlockSampler(dgl.dataloading.NeighborSampler):
-    def __init__(self, node_review_graph, review_graphs, aggregator, ui_graph, compact=True, fanout=5, **kwargs):
+    def __init__(self, node_review_graph, review_graphs, aggregator, sid_aos, aos_list, n_neg, ui_graph,
+                 compact=True, fanout=5, **kwargs):
         """
         Given nodes, samples reviews and creates a batched review-graph of all sampled reviews.
         Parameters
@@ -68,6 +71,9 @@ class HearBlockSampler(dgl.dataloading.NeighborSampler):
         self.node_review_graph = node_review_graph
         self.review_graphs = review_graphs
         self.aggregator = aggregator
+        self.sid_aos = sid_aos
+        self.aos_list = torch.LongTensor(aos_list)
+        self.n_neg = n_neg
         self.ui_graph = ui_graph
         self.compact = compact
         self.n_ui_graph = self._nu_graph()
@@ -148,7 +154,19 @@ class HearBlockSampler(dgl.dataloading.NeighborSampler):
             block.edata[dgl.EID] = eid
             seed_nodes = block.srcdata[dgl.NID]
             blocks2.insert(0, block)
-        return input_nodes, output_nodes, [blocks, blocks2]
+
+        # sample aos pos and negative pair.
+        neg_aos = torch.randint(len(self.aos_list), (len(nrg_exclude_eids), self.n_neg), dtype=torch.int64)
+        pos_aos = []
+        for sid in g.edata['sid'][exclude_eids].cpu().numpy():
+            aosid = self.sid_aos[sid]
+            pos_aos.append(aosid[torch.randperm(len(aosid))[0]])
+
+        pos_aos = torch.LongTensor(pos_aos)
+
+        pos_aos, neg_aos = self.aos_list[pos_aos], self.aos_list[neg_aos]
+
+        return input_nodes, output_nodes, [pos_aos, neg_aos], [blocks, blocks2]
 
 
 class HearReviewDataset(torch.utils.data.Dataset):

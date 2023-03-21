@@ -10,6 +10,41 @@ import cornac.models.ngcf.ngcf
 from cornac.models.hear.dgl_utils import HearReviewDataset, HearReviewSampler, HearReviewCollator
 
 
+class AOSPredictionLayer(nn.Module):
+    def __init__(self, in_dim1, in_dim2, hidden_dims, n_relations):
+        super().__init__()
+        dims = [in_dim1] + hidden_dims
+        self.mlp_ao = nn.ModuleList(nn.Sequential(
+            *[nn.Sequential(nn.Linear(dims[i], dims[i+1]), nn.ReLU()) for i in range(len(dims) - 1)]
+        ) for _ in range(n_relations))
+        dims = [in_dim2] + hidden_dims
+        self.mlp_ui = nn.Sequential(
+            *[nn.Sequential(nn.Linear(dims[i], dims[i+1]), nn.ReLU()) for i in range(len(dims) - 1)]
+        )
+        self._n_relations = n_relations
+        self._out_dim = hidden_dims[-1]
+
+    def forward(self, u_emb, i_emb, a_emb, o_emb, s):
+        ui_emb = self.mlp_ui(torch.cat([u_emb, i_emb], dim=-1))
+        ao_emb = torch.cat([a_emb, o_emb], dim=-1)
+
+        if len(ao_emb.size()) == 3:
+            b, n, d = ao_emb.size()
+        else:
+            b, d = ao_emb.size()
+            n = 1
+
+        s = s.reshape(b, n)
+        ao_emb = ao_emb.reshape(b, n, d)
+
+        aos_emb = torch.empty((len(s), n, self._out_dim), device=ui_emb.device)
+        for r in range(self._n_relations):
+            mask = s == r
+            aos_emb[mask] = self.mlp_ao[r](ao_emb[mask])
+
+        return (ui_emb.unsqueeze(1) * aos_emb).sum(-1)
+
+
 class HypergraphLayer(nn.Module):
     def __init__(self, in_dim, out_dim, non_linear=True, op='max', num_layers=1, n_relations=0):
         super().__init__()
@@ -250,6 +285,7 @@ class Model(nn.Module):
         self.lightgcn = cornac.models.ngcf.ngcf.Model(g, node_dim, [node_dim]*3, dropout=layer_dropout[0],
                                                   lightgcn=True, use_cuda=use_cuda)
 
+
         if aggregator.startswith('narre'):
             self.w_0 = nn.Linear(node_dim, node_dim)
 
@@ -262,10 +298,13 @@ class Model(nn.Module):
                 nn.Linear(node_dim, node_dim),
                 nn.Tanh()
             )
+            final_dim = node_dim
         elif self.predictor == 'narre':
             self.edge_predictor = dgl.nn.EdgePredictor('ele', 2*node_dim, 1, bias=True)
             self.bias = nn.Parameter(torch.zeros((n_nodes, 1)))
+            final_dim = 2*node_dim
 
+        self.aos_predictor = AOSPredictionLayer(2*node_dim, 2*final_dim, [node_dim, 64, 32], 2)
         self.rating_loss_fn = nn.MSELoss(reduction='mean')
         self.bpr_loss_fn = nn.Softplus()
         self.review_embs = None
@@ -381,6 +420,19 @@ class Model(nn.Module):
             return self._graph_bi_interaction(g, x)
         else:
             raise ValueError(f'Predictor not implemented for "{self.predictor}".')
+
+    def aos_graph_predict(self, g: dgl.DGLGraph, x):
+        with g.local_scope():
+            u, v = g.edges()
+            u_emb, i_emb = x[u], x[v]
+            a, o, s = g.edata['pos'].T  # todo reindex a and o to be proper values.
+            a_emb, o_emb = self.get_initial_embedings(a), self.get_initial_embedings(o)
+            preds_i = self.aos_predictor(u_emb, i_emb, a_emb, o_emb, s)
+            a, o, s = g.edata['neg'].permute(2, 0, 1)
+            a_emb, o_emb = self.get_initial_embedings(a), self.get_initial_embedings(o)
+            preds_j = self.aos_predictor(u_emb, i_emb, a_emb, o_emb, s)
+
+            return self.bpr_loss_fn(- (preds_i - preds_j)), preds_i > preds_j
 
     def _predict_dot(self, u_emb, i_emb):
         return (u_emb * i_emb).sum(-1)

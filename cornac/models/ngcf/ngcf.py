@@ -137,7 +137,7 @@ class Model(nn.Module):
                                    for ntype, embedding in embeddings.items()}
 
                 sampler = dgl.dataloading.MultiLayerFullNeighborSampler(1)
-                dataloader = dgl.dataloading.NodeDataLoader(
+                dataloader = dgl.dataloading.DataLoader(
                     g,
                     {k: torch.arange(g.number_of_nodes(k)) for k in g.ntypes},
                     sampler,

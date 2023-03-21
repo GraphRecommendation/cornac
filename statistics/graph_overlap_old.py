@@ -2,15 +2,7 @@ import sys
 from collections import Counter, defaultdict
 
 import numpy as np
-from nltk import OrderedDict
 from tqdm import tqdm
-
-from cornac.data.text import BaseTokenizer
-
-from cornac.data import Reader, SentimentModality, ReviewModality
-
-from cornac.datasets import amazon_cellphone_seer, amazon_computer_seer
-from cornac.eval_methods import StratifiedSplit
 from statistics import utils
 
 

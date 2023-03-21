@@ -17,6 +17,7 @@ from nltk.stem import PorterStemmer
 
 from ..recommender import Recommender
 from ...data import Dataset
+from ...utils.graph_construction import generate_mappings
 
 
 class LightRLA(Recommender):
@@ -99,6 +100,8 @@ class LightRLA(Recommender):
         self.n_relations = 0
         self.ntype_ranges = None
         self.node_filter = None
+        self.sid_aos = None
+        self.aos_tensor = None
 
         # Misc
         self.user_based = user_based
@@ -119,6 +122,7 @@ class LightRLA(Recommender):
 
     def _create_graphs(self, train_set: Dataset, graph_type, self_loop=True):
         import dgl
+        import dgl.sparse as dglsp
         import torch
 
         # create 1) u,i,a, 2) u,i,o 3) u, a, o, 4) i, o, a
@@ -127,18 +131,10 @@ class LightRLA(Recommender):
         n_users = len(train_set.uid_map)
         n_items = len(train_set.iid_map)
 
-        def get_map(mapping, stemmer):
-            id_to_new_word = {i: stemmer.stem(w) for w, i in mapping.items()}
-            word_to_new_id = {w: i for i, w in enumerate(sorted(set(id_to_new_word.values())))}
-            id_to_new_id = {i: word_to_new_id[w] for i, w in id_to_new_word.items()}
-            return id_to_new_id
+        _, _, _, _, _, _, a2a, o2o = generate_mappings(train_set.sentiment, 'a', get_ao_mappings=True)
 
-        stemmer = PorterStemmer()
-        a2a = get_map(sentiment_modality.aspect_id_map, stemmer)
-        o2o = get_map(sentiment_modality.opinion_id_map, stemmer)
-
-        n_aspects = len(a2a) if self.stemming else len(sentiment_modality.aspect_id_map)
-        n_opinions = len(o2o) if self.stemming else len(sentiment_modality.opinion_id_map)
+        n_aspects = max(a2a.values()) + 1 if self.stemming else len(sentiment_modality.aspect_id_map)
+        n_opinions = max(o2o.values()) + 1 if self.stemming else len(sentiment_modality.opinion_id_map)
         n_nodes = n_users + n_items + n_aspects + n_opinions
         n_types = 4
 
@@ -257,7 +253,17 @@ class LightRLA(Recommender):
                         'aspect': (n_items+n_users, n_items+n_users+n_aspects),
                         'opinion': (n_items+n_users+n_aspects, n_items+n_users+n_aspects+n_opinions)}
 
-        return n_nodes, n_types, n_items, train_graph, review_graphs, node_review_graph, ntype_ranges
+
+        sid_aos = []
+        for sid in range(max(train_set.sentiment.sentiment)+1):
+            aoss = train_set.sentiment.sentiment.get(sid, [])
+            sid_aos.append([(a2a[a], o2o[o], 0 if s == -1 else 1) for a, o, s in aoss])
+
+        aos_list = sorted({aos for aoss in sid_aos for aos in aoss})
+        aos_id = {aos: i for i, aos in enumerate(aos_list)}
+        sid_aos = [torch.LongTensor([aos_id[aos] for aos in aoss]) for aoss in sid_aos]
+
+        return n_nodes, n_types, n_items, train_graph, review_graphs, node_review_graph, ntype_ranges, sid_aos, aos_list
 
     def _flock_wrapper(self, func, fname, *args, **kwargs):
         from filelock import FileLock
@@ -265,7 +271,7 @@ class LightRLA(Recommender):
         fpath = os.path.join(self.out_path, fname)
         lock_fpath = os.path.join(self.out_path, fname + '.lock')
 
-        with FileLock(lock_fpath):
+        with FileLock(lock_fpath): # todo remove
             if os.path.exists(fpath):
                 with open(fpath, 'rb') as f:
                     data = pickle.load(f)
@@ -281,9 +287,9 @@ class LightRLA(Recommender):
         data = self._flock_wrapper(self._create_graphs, fname, train_set, graph_type, *args)
 
         n_nodes, n_types, self.n_items, self.train_graph, self.review_graphs, self.node_review_graph, \
-            self.ntype_ranges = data
+            self.ntype_ranges, sid_aos, aos_list = data
         self.node_filter = lambda t, nids: (nids >= self.ntype_ranges[t][0]) * (nids < self.ntype_ranges[t][1])
-        return n_nodes, n_types
+        return n_nodes, n_types, sid_aos, aos_list
 
     def _ao_embeddings(self, train_set):
         from gensim.models import Word2Vec
@@ -418,8 +424,8 @@ class LightRLA(Recommender):
         from cornac.models import NGCF
 
         super().fit(train_set, val_set)
-        n_nodes, self.n_relations = self._graph_wrapper(train_set, self.graph_type)  # graphs are as attributes of model.
-        a_embs, o_embs, u_embs, i_embs = self._learn_initial_embeddings(train_set)
+        n_nodes, self.n_relations, self.sid_aos, self.aos_list = self._graph_wrapper(train_set, self.graph_type)  # graphs are as attributes of model.
+        # a_embs, o_embs, u_embs, i_embs = self._learn_initial_embeddings(train_set)
 
         if not self.use_relation:
             self.n_relations = 0
@@ -483,6 +489,7 @@ class LightRLA(Recommender):
 
         # Create sampler
         sampler = dgl_utils.HearBlockSampler(self.node_review_graph, self.review_graphs, self.review_aggregator,
+                                             self.sid_aos, self.aos_list, 5,
                                              self.ui_graph, fanout=self.fanout)
         if self.objective == 'ranking':
             neg_sampler = cornac.utils.dgl.GlobalUniformItemSampler(self.num_neg_samples, self.train_set.num_items)
@@ -525,6 +532,10 @@ class LightRLA(Recommender):
                         x = self.model(blocks, self.model.get_initial_embedings(input_nodes))
 
                         pred = self.model.graph_predict(edge_subgraph, x)
+                        aos_loss, aos_acc = self.model.aos_graph_predict(edge_subgraph, x)
+                        aos_loss = aos_loss.mean()
+                        cur_losses['aos_loss'] = aos_loss.detach()
+                        cur_losses['aos_acc'] = (aos_acc.sum() / aos_acc.shape.numel()).detach()
 
                         if self.objective == 'ranking':
                             pred_j = self.model.graph_predict(neg_subgraph, x).reshape(-1, self.num_neg_samples)
@@ -542,6 +553,7 @@ class LightRLA(Recommender):
                             loss = self.model.rating_loss(pred, edge_subgraph.edata['label'])
                             cur_losses['loss'] = loss.detach()
 
+                        loss += aos_loss
                         loss.backward()
 
                         for k, v in cur_losses.items():
