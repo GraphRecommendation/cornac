@@ -19,8 +19,8 @@ parser.add_argument('--method_kwargs', default="{'matching_method':'a'}", type=s
 def run(path, dataset, method, method_kwargs, draw=False, rerun=False):
     # Get dataset and model
     eval_method = utils.initialize_dataset(dataset)
-    matching_method = method_kwargs['matching_method']
     model = utils.initialize_model(path, dataset, method)
+    matching_method = method_kwargs['matching_method']
     review_fname, graph_fname = get_method_paths(method_kwargs, dataset, method)
 
     # Iter test
@@ -31,7 +31,7 @@ def run(path, dataset, method, method_kwargs, draw=False, rerun=False):
     if (not os.path.isfile(review_fname) or rerun) and method not in ['kgat']:
         for user, item in tqdm(list(zip(*eval_method.test_set.csr_matrix.nonzero()))):
             if method == 'lightrla':
-                r = reverse_path(eval_method, user, item, 'a')
+                r = reverse_path(eval_method, user, item, matching_method)
                 # TODO fix, should not be none or better handling
                 if r is None:
                     continue

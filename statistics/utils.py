@@ -1,3 +1,4 @@
+import itertools
 import os
 import pickle
 from collections import OrderedDict, defaultdict
@@ -19,6 +20,7 @@ def id_mapping(eval_method, eid, type):
     num_items = eval_method.train_set.num_items
     num_users = eval_method.train_set.num_users
     num_aspects = eval_method.sentiment.num_aspects
+    num_opinions = eval_method.sentiment.num_opinions
 
     if type == 'i':
         return eid
@@ -26,8 +28,32 @@ def id_mapping(eval_method, eid, type):
         return eid + num_items
     elif type == 'a':
         return eid + num_items + num_users
-    else:
+    elif type == 'o':
         return eid + num_items + num_users + num_aspects
+    elif type in ['aos', 'as', 'ao']:
+        # create unique mapping for all aos combinations
+        tot = 0
+        scale = 0
+        for i, t in enumerate(type):
+            if t == 's':
+                v = 0 if eid[i] == -1 else 1
+                inc = 2
+            elif t == 'o':
+                v = eid[i]
+                inc = num_opinions
+            else:
+                v = eid[i]
+                inc = num_aspects
+            if scale == 0:
+                tot = v
+                scale = inc
+            else:
+                tot += scale * v
+                scale *= inc
+
+        return tot
+    else:
+        raise NotImplementedError
 
 
 def get_method_paths(method_kwargs, dataset, method):
@@ -86,6 +112,10 @@ def generate_mappings(sentiment, match, get_ao_mappings=False, get_sent_edge_map
                     element = (a, o, s)
                 elif match == 'a':
                     element = a
+                elif match == 'as':
+                    element = (a, s)
+                elif match == 'ao':
+                    element = (a, o)
                 else:
                     raise NotImplementedError
 

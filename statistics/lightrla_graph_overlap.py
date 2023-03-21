@@ -239,7 +239,8 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
                 for aos, sids in aos_sids.items()}
 
         # 1-att for shortest path but is highest weight.
-        data = [(nid, aos+n_users_items, {'weight': 1-atts[aos][sid], 'sid': sid}) for aos, sids in aos_sids.items() for sid in sids]
+        data = [(nid, id_mapping(eval_method, aos, match), {'weight': 1-atts[aos][sid], 'sid': sid})
+                for aos, sids in aos_sids.items() for sid in sids]
         return data
 
     # Construct nx graph
