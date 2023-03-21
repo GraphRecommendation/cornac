@@ -4,5 +4,5 @@
   "GPU_MULT": 1,
   "BASE": "source .venv/bin/activate;",
   "DATASET": "cellphone",
-  "METHOD": "kgat"
+  "METHOD": "light2"
 }

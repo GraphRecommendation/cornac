@@ -411,3 +411,20 @@ class TranRBlockSampler(dgl.dataloading.NeighborSampler):
         input_nodes = nid
 
         return input_nodes, output_nodes, blocks
+
+
+def extract_attention(model, node_review_graph, device):
+    # Node inference setup
+    indices = {'node': node_review_graph.nodes('node')}
+    sampler = dgl.dataloading.MultiLayerFullNeighborSampler(1)
+    dataloader = dgl.dataloading.DataLoader(node_review_graph, indices, sampler, batch_size=1024, shuffle=False,
+                                            drop_last=False, device=device)
+
+    review_attention = torch.zeros((node_review_graph.num_edges(), model.review_agg._num_heads, 1)).to(device)
+
+    # Node inference
+    for input_nodes, output_nodes, blocks in dataloader:
+        x, a = model.review_aggregation(blocks[0]['part_of'], model.review_embs[input_nodes['review']], True)
+        review_attention[blocks[0]['part_of'].edata[dgl.EID]] = a
+
+    return review_attention
