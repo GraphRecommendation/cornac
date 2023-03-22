@@ -286,10 +286,10 @@ class Model(nn.Module):
         self.lightgcn = cornac.models.ngcf.ngcf.Model(g, node_dim, [node_dim]*3, dropout=layer_dropout[0],
                                                   lightgcn=True, use_cuda=use_cuda)
 
-
         if aggregator.startswith('narre'):
             self.w_0 = nn.Linear(node_dim, node_dim)
 
+        final_dim = node_dim
         if predictor == 'bi-interaction':
             self.add_mlp = nn.Sequential(
                 nn.Linear(node_dim, node_dim),
@@ -299,7 +299,6 @@ class Model(nn.Module):
                 nn.Linear(node_dim, node_dim),
                 nn.Tanh()
             )
-            final_dim = node_dim
         elif self.predictor == 'narre':
             self.edge_predictor = dgl.nn.EdgePredictor('ele', 2*node_dim, 1, bias=True)
             self.bias = nn.Parameter(torch.zeros((n_nodes, 1)))
@@ -313,6 +312,8 @@ class Model(nn.Module):
         self.lemb = None
         self.first = True
         self.review_attention = None
+        self.ui_emb = None
+        self.aos_emb = None
 
     def get_initial_embedings(self, nodes):
         if hasattr(self, 'node_embedding'):
@@ -455,6 +456,22 @@ class Model(nn.Module):
         i_emb = self.add_mlp(i_emb + li_emb) + self.mul_mlp(i_emb * li_emb)
         pred = self._predict_dot(u_emb, i_emb)
         return pred
+
+    def aos_predict(self, user, item, aspect, opinion, sentiment):
+        u_emb, i_emb = self.inf_emb[user], self.inf_emb[item]
+
+        if self.predictor == 'dot':
+            u_emb, i_emb = u_emb * self.lemb[user], i_emb * self.lemb[item]
+        elif self.predictor == 'narre':
+            u_emb, i_emb = torch.cat([u_emb,  self.lemb[user]], dim=-1), torch.cat([i_emb,  self.lemb[item]], dim=-1)
+        else:
+            raise ValueError(f'Predictor not implemented for "{self.predictor}".')
+
+        a_emb, o_emb = self.get_initial_embedings(aspect), self.get_initial_embedings(opinion)
+
+        preds = self.aos_predictor(u_emb, i_emb, a_emb, o_emb, sentiment)
+
+        return preds
 
     def predict(self, user, item):
         u_emb, i_emb = self.inf_emb[user], self.inf_emb[item]

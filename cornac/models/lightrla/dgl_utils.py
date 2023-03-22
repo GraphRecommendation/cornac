@@ -51,7 +51,7 @@ class HEAREdgeSampler(dgl.dataloading.EdgePredictionSampler):
 
 class HearBlockSampler(dgl.dataloading.NeighborSampler):
     def __init__(self, node_review_graph, review_graphs, aggregator, sid_aos, aos_list, n_neg, ui_graph,
-                 compact=True, fanout=5, **kwargs):
+                 compact=True, hard_negatives=False, fanout=5, **kwargs):
         """
         Given nodes, samples reviews and creates a batched review-graph of all sampled reviews.
         Parameters
@@ -78,6 +78,7 @@ class HearBlockSampler(dgl.dataloading.NeighborSampler):
         self.n_neg = n_neg
         self.ui_graph = ui_graph
         self.compact = compact
+        self.hard_negatives = hard_negatives
         self.n_ui_graph = self._nu_graph()
 
     def _nu_graph(self):
@@ -158,8 +159,12 @@ class HearBlockSampler(dgl.dataloading.NeighborSampler):
             blocks2.insert(0, block)
 
         # sample aos pos and negative pair.
-        neg_aos = torch.multinomial(self.aos_probabilities, len(exclude_eids) * self.n_neg, replacement=True)\
-            .reshape(len(exclude_eids), self.n_neg)
+        if self.hard_negatives:
+            neg_aos = torch.multinomial(self.aos_probabilities, len(exclude_eids) * self.n_neg, replacement=True)\
+                .reshape(len(exclude_eids), self.n_neg)
+        else:
+            neg_aos = torch.randint(len(self.aos_probabilities), size=(len(exclude_eids), self.n_neg))
+
         pos_aos = []
         for sid in g.edata['sid'][exclude_eids].cpu().numpy():
             aosid = self.sid_aos[sid]

@@ -495,7 +495,7 @@ class LightRLA(Recommender):
             ic = collections.Counter(self.train_set.matrix.nonzero()[1])
             probabilitites = torch.FloatTensor([ic.get(i) for i in sorted(ic)])
             neg_sampler = cornac.utils.dgl.GlobalUniformItemSampler(self.num_neg_samples, self.train_set.num_items,
-                                                                    probabilitites)
+                                                                    None)
         else:
             neg_sampler = None
 
