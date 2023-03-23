@@ -207,6 +207,25 @@ def reverse_path(eval_method, user, item, match):
         return None
 
 
+def _get_sids(eval_method, nid, aoss, is_user, aos_sent):
+    mapping = eval_method.sentiment.user_sentiment if is_user else eval_method.sentiment.item_sentiment
+    sids = {aos: [sid for _, sid in mapping[nid].items() if sid in aos_sent[aos]] for aos in aoss }
+    sids = OrderedDict(sids)
+    return sids
+
+
+def _create_edges(eval_method, match, nid, nid_inner, aos_sids, atts, agg, is_user, usem, isem):
+    edge_map = usem if is_user else isem
+    # Get attention and aggregate across heads.
+    atts = {aos: {sid: agg(atts[edge_map[(sid, nid_inner)]]) for sid in sids}
+            for aos, sids in aos_sids.items()}
+
+    # 1-att for shortest path but is highest weight.
+    data = [(nid, id_mapping(eval_method, aos, match), {'weight': 1-atts[aos][sid], 'sid': sid})
+            for aos, sids in aos_sids.items() for sid in sids]
+    return data
+
+
 def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology='weighted', weighting='attention',
                     aggregator=np.mean):
     aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos, user_sent_edge_map, item_sent_edge_map = \
@@ -226,23 +245,6 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
     if edges is None:
         raise NotImplementedError
 
-    def get_sids(nid, aoss, is_user):
-        mapping = eval_method.sentiment.user_sentiment if is_user else eval_method.sentiment.item_sentiment
-        sids = {aos: [sid for _, sid in mapping[nid].items() if sid in aos_sent[aos]] for aos in aoss }
-        sids = OrderedDict(sids)
-        return sids
-
-    def create_edges(nid, nid_inner, aos_sids, atts, agg, is_user):
-        edge_map = user_sent_edge_map if is_user else item_sent_edge_map
-        # Get attention and aggregate across heads.
-        atts = {aos: {sid: agg(atts[edge_map[(sid, nid_inner)]]) for sid in sids}
-                for aos, sids in aos_sids.items()}
-
-        # 1-att for shortest path but is highest weight.
-        data = [(nid, id_mapping(eval_method, aos, match), {'weight': 1-atts[aos][sid], 'sid': sid})
-                for aos, sids in aos_sids.items() for sid in sids]
-        return data
-
     # Construct nx graph
     # goes backwards
     data = []
@@ -259,18 +261,21 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
 
             src_inner = src - n_items
 
-            dst_sids = get_sids(dst_inner, aoss, is_user=h != 0)  # only an item on the first hop
-            src_sids = get_sids(src_inner, aoss, is_user=True)
+            dst_sids = _get_sids(eval_method, dst_inner, aoss, is_user=h != 0, aos_sent=aos_sent)  # only an item on the first hop
+            src_sids = _get_sids(eval_method, src_inner, aoss, is_user=True, aos_sent=aos_sent)
             if h == 0:
                 # we know h == 0
-                data.extend(create_edges(dst, dst_inner, dst_sids, attention, aggregator, False))
+                data.extend(_create_edges(eval_method, match, dst, dst_inner, dst_sids, attention, aggregator, False,
+                                          user_sent_edge_map, item_sent_edge_map))
             # elif h % 4 == 0:
             #     pass
             else:
-                data.extend(create_edges(dst, dst_inner, dst_sids, attention, aggregator, True))
+                data.extend(_create_edges(eval_method, match, dst, dst_inner, dst_sids, attention, aggregator, True,
+                                          user_sent_edge_map, item_sent_edge_map))
 
             # Source is always a user
-            data.extend(create_edges(src, src_inner, src_sids, attention, aggregator, True))
+            data.extend(_create_edges(eval_method, match, src, src_inner, src_sids, attention, aggregator, True,
+                                      user_sent_edge_map, item_sent_edge_map))
 
     # assign weights and edge identifiers
     # if attention use attention, if similarity, assign user similarity as weight
