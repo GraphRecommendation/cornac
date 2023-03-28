@@ -8,6 +8,7 @@ from collections import Counter
 from scipy import stats
 from tqdm import tqdm
 
+from cornac.utils.graph_construction import generate_mappings
 from statistics import utils, lightrla_graph_overlap, kgat_graph_overlap
 
 parser = argparse.ArgumentParser()
@@ -23,7 +24,7 @@ def run(path, dataset, method, at, method_kwargs):
     matching_method = method_kwargs['matching_method']
     review_fname, graph_fname = utils.get_method_paths(method_kwargs, dataset, method)
     aos_user, aos_item, _, user_aos, item_aos, sent_aos, a_mapping, o_mapping = \
-        utils.generate_mappings(eval_method.sentiment, matching_method, get_ao_mappings=True)
+        generate_mappings(eval_method.sentiment, matching_method, get_ao_mappings=True)
 
     rid_sid = {rid: eval_method.sentiment.user_sentiment[uid][iid]
                for uid, irid in eval_method.review_text.user_review.items()
@@ -45,8 +46,15 @@ def run(path, dataset, method, at, method_kwargs):
         rsum = 0
         rlen = 0
         mrsum = 0
-        mrlen = 0
-        m = eval_method.sentiment.num_aspects
+
+        if method == 'kgat':
+            raise NotImplementedError
+        elif matching_method == 'a':
+            diversity_max = eval_method.sentiment.num_aspects
+        elif matching_method == 'ao':
+            diversity_max = eval_method.sentiment.num_aspects + eval_method.sentiment.num_opinions
+        else:
+            raise NotImplementedError
         if method == 'kgat':
             m = utils.id_mapping(eval_method, eval_method.sentiment.num_opinions, 'o') - eval_method.train_set.num_items
             g = model.train_graph.to_networkx()
@@ -80,11 +88,10 @@ def run(path, dataset, method, at, method_kwargs):
                     sids = lightrla_graph_overlap.get_reviews_nwx(eval_method, model, r, matching_method,
                                                                       **method_kwargs[method])
 
-                    # s_aos = set(sent_aos[sids[-1]])
-                    s_aos = set(a for s in sids[-1:] for a in sent_aos[s])
+                    s_aos = set(sent_aos[sids[-1]])
+                    # s_aos = set(a for s in sids[-1:] for a in sent_aos[s])
                     diversity.update(s_aos)
-                    matched = [item for item, i_aos in item_aos.items() if item != iid and
-                               s_aos.issubset(i_aos) and item not in rated]
+                    matched = [item for item, i_aos in item_aos.items() if s_aos.issubset(i_aos)]
                     # matched = [item for rid, r_aos in rid_aos.items() if (item:= rid_iid[rid]) != iid and
                     #            s_aos.issubset(r_aos) and item not in rated]
                 elif method == 'kgat':
@@ -99,8 +106,9 @@ def run(path, dataset, method, at, method_kwargs):
                         else:
                             matched.intersection_update(n)
 
-                    matched = list(i for i in matched if i < len(eval_method.global_iid_map) and i != iid
-                                   and i not in rated)
+                    matched = list(i for i in matched if i < len(eval_method.global_iid_map))
+
+                matched = [m for m in matched if m != iid and m not in rated]
 
                 ir = ranks[matched]
                 mir = mp_ranks[matched]
@@ -119,7 +127,7 @@ def run(path, dataset, method, at, method_kwargs):
                 progressbar.set_description(f'AR:{rsum/rlen:.3f},MAR:{mrsum/rlen:.3f},'
                                             f'PF:{found/((progressbar.n+1)*at):.3f},'
                                             f'AN:{rlen/((progressbar.n+1)*at):.3f},'
-                                            f'D:{len(diversity)/m:.3f}')
+                                            f'D:{len(diversity)/diversity_max:.3f}')
 
     # Test towards random, i.e., better than the mean.
     rank_u = np.array([np.mean(r) for _,_, r in rankings])

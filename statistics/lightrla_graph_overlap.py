@@ -1,3 +1,4 @@
+import inspect
 import itertools
 import math
 import re
@@ -11,7 +12,8 @@ from matplotlib import pyplot as plt
 from tqdm import tqdm
 
 from cornac.models.lightrla.dgl_utils import extract_attention
-from statistics.utils import id_mapping, generate_mappings
+from cornac.utils.graph_construction import generate_mappings
+from statistics.utils import id_mapping
 
 
 def draw_test(edges):
@@ -226,13 +228,61 @@ def _create_edges(eval_method, match, nid, nid_inner, aos_sids, atts, agg, is_us
     return data
 
 
+def _create_edges_aos(eval_method, model, match, aos_sids, nid, uid, iid, sid_aos, aos_list, agg):
+    # get a list of a o s
+    with torch.no_grad():
+        device = model.device
+        aid, oid, s = torch.LongTensor([aos_list[aos] for sids in aos_sids.values()
+                                        for sid in sids for aos in sid_aos[sid]]).to(device).T
+        uid = torch.LongTensor([uid] * len(aid)).to(device)
+        iid = torch.LongTensor([iid] * len(aid)).to(device)
+        rank = model.model.aos_predict(uid, iid, aid, oid, s).reshape(-1).cpu().tolist()
+
+    m_w = max(rank)
+    cur_i = -1
+    atts = defaultdict(dict)
+    for aos, sids in aos_sids.items():
+        for sid in sids:
+            atts[aos][sid] = agg([rank[(cur_i := (cur_i + 1))] for _ in sid_aos[sid]])
+    data = [(nid, id_mapping(eval_method, aos, match), {'weight': m_w-atts[aos][sid], 'sid': sid})
+            for aos, sids in aos_sids.items() for sid in sids]
+
+    return data
+
+
+def _create_edge_wrapper(weighting, kwargs):
+    if weighting == 'attention':
+        func = _create_edges
+    elif weighting == 'aos':
+        func = _create_edges_aos
+    else:
+        raise NotImplementedError
+
+    f_args = inspect.getfullargspec(func)[0]
+    kwargs = {k: v for k, v in kwargs.items() if k in f_args}
+    return func(**kwargs)
+
+
 def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology='weighted', weighting='attention',
                     aggregator=np.mean):
-    aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos, user_sent_edge_map, item_sent_edge_map = \
-        generate_mappings(eval_method.sentiment, match, get_sent_edge_mappings=True)  # Get mappings
+    aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos, a2a, o2o, user_sent_edge_map, item_sent_edge_map = \
+        generate_mappings(eval_method.sentiment, match, get_ao_mappings=True, get_sent_edge_mappings=True)  # Get mappings
     e_length = len(edges)
     n_items = eval_method.train_set.num_items
-    n_users_items = n_items + eval_method.train_set.num_users
+    n_users = eval_method.train_set.num_users
+    n_aspects = max(a2a.values()) + 1
+    n_opinions = max(o2o.values()) + 1
+    n_users_items = n_items + n_users
+
+    sid_aos = []
+    for sid in range(max(eval_method.sentiment.sentiment)+1):
+        aoss = eval_method.sentiment.sentiment.get(sid, [])
+        sid_aos.append([(a2a[a]+n_users_items, o2o[o]+n_users_items+n_aspects, 0 if s == -1 else 1)
+                        for a, o, s in aoss])
+
+    aos_list = sorted({aos for aoss in sid_aos for aos in aoss})
+    aos_id = {aos: i for i, aos in enumerate(aos_list)}
+    sid_aos = [torch.LongTensor([aos_id[aos] for aos in aoss]) for aoss in sid_aos]
 
     # Get review attention.
     if hackjob:
@@ -245,9 +295,18 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
     if edges is None:
         raise NotImplementedError
 
+    uid, iid = next(iter(edges[max(edges)]))[0], next(iter(edges[0]))[1]
+
     # Construct nx graph
     # goes backwards
     data = []
+
+    edges_kwargs = {'eval_method': eval_method, 'match': match, 'agg': aggregator}
+    if weighting == 'attention':
+        edges_kwargs.update({'usem': user_sent_edge_map, 'isem': item_sent_edge_map, 'atts': attention})
+    elif weighting == 'aos':
+        edges_kwargs.update({'model': model, 'uid': uid, 'iid': iid, 'sid_aos': sid_aos, 'aos_list': aos_list})
+
     for h in range(0, e_length, 2):
         aoss = sorted({aos for aos, _ in edges[h]})
         dsts = sorted({dst for (_, dst) in edges[h]})
@@ -263,19 +322,22 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
 
             dst_sids = _get_sids(eval_method, dst_inner, aoss, is_user=h != 0, aos_sent=aos_sent)  # only an item on the first hop
             src_sids = _get_sids(eval_method, src_inner, aoss, is_user=True, aos_sent=aos_sent)
+            #def _create_edges(, , nid, nid_inner, aos_sids, , , is_user, ):
+            #def _create_edges_aos(, , , aos_sids, nid, , , , , ):
+
             if h == 0:
                 # we know h == 0
-                data.extend(_create_edges(eval_method, match, dst, dst_inner, dst_sids, attention, aggregator, False,
-                                          user_sent_edge_map, item_sent_edge_map))
+                edges_kwargs.update({'nid': dst, 'aos_sids': dst_sids, 'nid_inner': dst_inner, 'is_user': False})
+                data.extend(_create_edge_wrapper(weighting, edges_kwargs))
             # elif h % 4 == 0:
             #     pass
             else:
-                data.extend(_create_edges(eval_method, match, dst, dst_inner, dst_sids, attention, aggregator, True,
-                                          user_sent_edge_map, item_sent_edge_map))
+                edges_kwargs.update({'nid': dst, 'aos_sids': dst_sids, 'nid_inner': dst_inner, 'is_user': True})
+                data.extend(_create_edge_wrapper(weighting, edges_kwargs))
 
             # Source is always a user
-            data.extend(_create_edges(eval_method, match, src, src_inner, src_sids, attention, aggregator, True,
-                                      user_sent_edge_map, item_sent_edge_map))
+            edges_kwargs.update({'nid': src, 'aos_sids': src_sids, 'nid_inner': src_inner, 'is_user': True})
+            data.extend(_create_edge_wrapper(weighting, edges_kwargs))
 
     # assign weights and edge identifiers
     # if attention use attention, if similarity, assign user similarity as weight

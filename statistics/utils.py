@@ -1,11 +1,7 @@
-import itertools
 import os
 import pickle
-from collections import OrderedDict, defaultdict
-from functools import lru_cache
 
 import pandas as pd
-import re
 
 from cornac.eval_methods import StratifiedSplit
 
