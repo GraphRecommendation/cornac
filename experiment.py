@@ -136,7 +136,7 @@ def run(in_kwargs, dataset, method, save_dir='.'):
         default_kwargs = {}
         from cornac.models import MostPop
         model = MostPop
-    elif method == 'narre':
+    elif method in ['narre', 'hrdr']:
         default_kwargs = {
             'embedding_size': 100,
             'id_embedding_size': 32,

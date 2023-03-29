@@ -154,13 +154,13 @@ def create_heterogeneous_graph(train_set, bipartite=True):
 
     et_id_map = {et: i for i, et in enumerate(sorted(edge_types))}
 
-    g = dgl.graph((torch.cat(edges_t[0], edges_t[1]), torch.cat(edges_t[1], edges_t[0])), num_nodes=n_nodes)
-    inverse_et = {v: k for k, l in edge_types.items() for v in l}
-    et = torch.LongTensor([et_id_map[inverse_et[v]] for v in edges_t.T.tolist()])
+    g = dgl.graph((torch.cat([edges_t[0], edges_t[1]]), torch.cat([edges_t[1], edges_t[0]])), num_nodes=n_nodes)
+    inverse_et = {tuple(v): k for k, l in edge_types.items() for v in l}
+    et = torch.LongTensor([et_id_map[inverse_et[tuple(v)]] for v in edges_t.T.tolist()])
 
     # Return 0 if not a rating type, else if using actual ratings return values else return 1 (bipartite).
     value_fn = lambda etype: 0 if etype not in train_types else (float(etype) if etype != 'interacted' else 1)
-    labels = torch.FloatTensor([value_fn(inverse_et[v]) for v in edges_t.T.tolist()])
+    labels = torch.FloatTensor([value_fn(inverse_et[tuple(v)]) for v in edges_t.T.tolist()])
 
     g.edata['type'] = torch.cat([et, et + n_relations])
 

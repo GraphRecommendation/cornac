@@ -49,10 +49,20 @@ kgat_hyperparameters = {
     'dropout': np.linspace(0., 0.6, 7).round(1).tolist()
 }
 
-# narre_hyperparameters = {
-#     'learning_rate',
-#     'dropout',
-# }
+narre_hyperparameters = {
+    'learning_rate': [0.00001, 0.0001, 0.001],
+    'dropout_rate': np.linspace(0., 0.6, 7).round(1).tolist(),
+    'max_iter': [shared_hyperparameters['num_epochs']]
+}
+
+bpr_hyperparameters = {
+    'k': [32, 64, 128],
+    'learning_rate': [0.00001, 0.0001, 0.001],
+    'lambda_reg': [1e-6, 1e-5, 1e-4],
+    'use_bias': [True, False],
+    'max_iter': [shared_hyperparameters['num_epochs']]
+}
+
 
 with open('config.json') as f:
     config = json.load(f)
@@ -73,8 +83,8 @@ def process_runner(dataset, method, parameters, gpu):
         print(line)
 
     p.wait()
-
-    return gpu
+    returncode = p.returncode
+    return gpu, returncode, parameters
 
 
 def create_hyperparameter_dict(comb, model_parameters, shared_parameters):
@@ -92,8 +102,10 @@ def run(dataset, method):
     elif method == 'light2':
         method = 'lightrla'
         parameters = lightrla2_hyperparameters
-    elif method in ['kgat', 'lightgcn']:
+    elif method in ['kgat', 'lightgcn', 'ngcf']:
         parameters = kgat_hyperparameters
+    elif method == 'bpr':
+        parameters = bpr_hyperparameters
     else:
         raise NotImplementedError
 
@@ -105,6 +117,7 @@ def run(dataset, method):
     futures = []
     first = True
     index = 0
+    failed = []
     with ThreadPoolExecutor(max_workers=len(GPUS)) as e, open(f'{dataset}_{method}_parameters.pkl', 'wb') as f:
         while combinations:
             # should only be false on first iteration
@@ -124,7 +137,10 @@ def run(dataset, method):
                 # if any process is completed start new on same gpu; otherwise, wait for one to finish
                 if completed:
                     f = futures.pop(completed[0])
-                    gpu = f.result()
+                    gpu, returncode, parameters = f.result()
+                    if returncode != 0:
+                        failed.append(parameters)
+
                     params = create_hyperparameter_dict(combinations.pop(0), parameters, shared_hyperparameters)
                     params.update({'index': index})
                     index += 1
@@ -133,15 +149,19 @@ def run(dataset, method):
                     concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED)
 
     concurrent.futures.wait(futures)
+    for f in futures:
+        gpu, returncode, parameters = f.result()
+        if returncode != 0:
+            failed.append(parameters)
+
+    if len(failed):
+        with open(f'failed_experiments_{dataset}_{method}.pickle', 'wb') as f:
+            pickle.dump(failed, f)
 
 
 if __name__ == '__main__':
-    if 'DATASETS' in config:
-        for dataset in config['DATASETS']:
-            if 'METHODS' in config:
-                for method in config['METHODS']:
-                    run(dataset, method)
-            else:
-                run(dataset, config['METHOD'])
-    else:
-        run(config['DATASET'], config['METHOD'])
+    datasets = config['DATASETS'] if 'DATASETS' in config else [config['DATASET']]
+    methods = config['METHODS'] if 'METHDOS' in config else [config['METHOD']]
+    for dataset in datasets:
+        for method in methods:
+            run(dataset, method)

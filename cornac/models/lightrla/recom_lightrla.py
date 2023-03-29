@@ -48,6 +48,8 @@ class LightRLA(Recommender):
                  index=0,
                  use_tensorboard=True,
                  out_path=None,
+                 popularity_biased_sampling=False,
+                 learn_explainability=False,
                  debug=False
                  ):
         from torch.utils.tensorboard import SummaryWriter
@@ -85,9 +87,12 @@ class LightRLA(Recommender):
         self.layer_dropout = layer_dropout
         self.attention_dropout = attention_dropout
         self.stemming = stemming
+        self.learn_explainability = learn_explainability
+        self.popularity_biased_sampling = popularity_biased_sampling
         parameter_list = ['batch_size', 'learning_rate', 'weight_decay', 'node_dim', 'num_heads',
                           'fanout', 'use_relation', 'model_selection', 'review_aggregator', 'objective',
-                          'predictor', 'preference_module', 'layer_dropout', 'attention_dropout', 'stemming']
+                          'predictor', 'preference_module', 'layer_dropout', 'attention_dropout', 'stemming',
+                          'learn_explainability', 'popularity_biased_sampling']
         self.parameters = collections.OrderedDict({k: self.__getattribute__(k) for k in parameter_list})
 
         # Method
@@ -122,7 +127,6 @@ class LightRLA(Recommender):
 
     def _create_graphs(self, train_set: Dataset, graph_type, self_loop=True):
         import dgl
-        import dgl.sparse as dglsp
         import torch
 
         # create 1) u,i,a, 2) u,i,o 3) u, a, o, 4) i, o, a
@@ -271,7 +275,7 @@ class LightRLA(Recommender):
         fpath = os.path.join(self.out_path, fname)
         lock_fpath = os.path.join(self.out_path, fname + '.lock')
 
-        with FileLock(lock_fpath): # todo remove
+        with FileLock(lock_fpath):
             if os.path.exists(fpath):
                 with open(fpath, 'rb') as f:
                     data = pickle.load(f)
@@ -493,16 +497,15 @@ class LightRLA(Recommender):
                                              self.ui_graph, fanout=self.fanout)
         if self.objective == 'ranking':
             ic = collections.Counter(self.train_set.matrix.nonzero()[1])
-            probabilitites = torch.FloatTensor([ic.get(i) for i in sorted(ic)])
+            probabilities = torch.FloatTensor([ic.get(i) for i in sorted(ic)]) if self.popularity_biased_sampling \
+                else None
             neg_sampler = cornac.utils.dgl.GlobalUniformItemSampler(self.num_neg_samples, self.train_set.num_items,
-                                                                    None)
+                                                                    probabilities)
         else:
             neg_sampler = None
 
         sampler = dgl_utils.HEAREdgeSampler(sampler, prefetch_labels=prefetch, negative_sampler=neg_sampler,
                                             exclude='self')
-        # sampler = dgl.dataloading.as_edge_prediction_sampler(sampler, prefetch_labels=prefetch, negative_sampler=neg_sampler,
-        #                                     exclude='self')
         dataloader = dgl.dataloading.DataLoader(g, eids, sampler, batch_size=self.batch_size, shuffle=True,
                                                 drop_last=True, device=self.device, use_uva=self.use_uva,
                                                 num_workers=num_workers, use_prefetch_thread=thread)
@@ -535,10 +538,6 @@ class LightRLA(Recommender):
                         x = self.model(blocks, self.model.get_initial_embedings(input_nodes))
 
                         pred = self.model.graph_predict(edge_subgraph, x)
-                        aos_loss, aos_acc = self.model.aos_graph_predict(edge_subgraph, x)
-                        aos_loss = aos_loss.mean()
-                        cur_losses['aos_loss'] = aos_loss.detach()
-                        cur_losses['aos_acc'] = (aos_acc.sum() / aos_acc.shape.numel()).detach()
 
                         if self.objective == 'ranking':
                             pred_j = self.model.graph_predict(neg_subgraph, x).reshape(-1, self.num_neg_samples)
@@ -556,7 +555,13 @@ class LightRLA(Recommender):
                             loss = self.model.rating_loss(pred, edge_subgraph.edata['label'])
                             cur_losses['loss'] = loss.detach()
 
-                        loss += aos_loss
+                        if self.learn_explainability:
+                            aos_loss, aos_acc = self.model.aos_graph_predict(edge_subgraph, x)
+                            aos_loss = aos_loss.mean()
+                            cur_losses['aos_loss'] = aos_loss.detach()
+                            cur_losses['aos_acc'] = (aos_acc.sum() / aos_acc.shape.numel()).detach()
+                            loss += aos_loss
+
                         loss.backward()
 
                         for k, v in cur_losses.items():
@@ -575,9 +580,6 @@ class LightRLA(Recommender):
                             results = self._validate(val_set, metrics)
                             res_str = 'Val: ' + ', '.join([f'{m.name}:{r:.4f}' for m, r in zip(metrics, results)])
                             progress.set_description(f'Epoch {e}, ' + f'{loss_str}, ' + res_str)
-
-                            # if scheduler is not None:
-                            #     scheduler.step(results[0])
 
                             if self.summary_writer is not None:
                                 for m, r in zip(metrics, results):
