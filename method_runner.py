@@ -136,4 +136,12 @@ def run(dataset, method):
 
 
 if __name__ == '__main__':
-    run(config['DATASET'], config['METHOD'])
+    if 'DATASETS' in config:
+        for dataset in config['DATASETS']:
+            if 'METHODS' in config:
+                for method in config['METHODS']:
+                    run(dataset, method)
+            else:
+                run(dataset, config['METHOD'])
+    else:
+        run(config['DATASET'], config['METHOD'])
