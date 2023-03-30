@@ -84,6 +84,7 @@ def process_runner(dataset, method, parameters, gpu):
 
     p.wait()
     returncode = p.returncode
+
     return gpu, returncode, parameters
 
 
@@ -137,9 +138,9 @@ def run(dataset, method):
                 # if any process is completed start new on same gpu; otherwise, wait for one to finish
                 if completed:
                     f = futures.pop(completed[0])
-                    gpu, returncode, parameters = f.result()
+                    gpu, returncode, pm = f.result()
                     if returncode != 0:
-                        failed.append(parameters)
+                        failed.append(pm)
 
                     params = create_hyperparameter_dict(combinations.pop(0), parameters, shared_hyperparameters)
                     params.update({'index': index})
@@ -161,7 +162,7 @@ def run(dataset, method):
 
 if __name__ == '__main__':
     datasets = config['DATASETS'] if 'DATASETS' in config else [config['DATASET']]
-    methods = config['METHODS'] if 'METHDOS' in config else [config['METHOD']]
+    methods = config['METHODS'] if 'METHODS' in config else [config['METHOD']]
     for dataset in datasets:
         for method in methods:
             run(dataset, method)
