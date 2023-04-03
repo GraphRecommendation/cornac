@@ -63,6 +63,15 @@ bpr_hyperparameters = {
     'max_iter': [shared_hyperparameters['num_epochs']]
 }
 
+trirank_hyperparameters = {
+    'alpha': [0., 0.5, 1.],
+    'beta': [0., 0.5, 1.],
+    'gamma': [0., 0.5, 1.],
+    'mu_U': [0., 0.5, 1.],
+    'mu_P': [0., 0.5, 1.],
+    'mu_A': [0., 0.5, 1.]
+}
+
 
 with open('config.json') as f:
     config = json.load(f)
@@ -105,7 +114,16 @@ def run(dataset, method):
     elif method in ['kgat', 'lightgcn', 'ngcf']:
         parameters = kgat_hyperparameters
     elif method == 'bpr':
-        parameters = bpr_hyperparameters
+        parameters = bpr_hyperparameters,
+    elif method in ['narre', 'hrdr', 'narre-bpr', 'hrdr-bpr']:
+        parameters = narre_hyperparameters
+
+        if method.endswith('bpr'):
+            method = method.replace('-bpr', '')
+            parameters['use_bpr'] = True
+
+    elif method == 'trirank':
+        parameters = trirank_hyperparameters
     else:
         raise NotImplementedError
 
