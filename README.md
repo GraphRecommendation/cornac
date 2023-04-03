@@ -52,6 +52,8 @@ Currently, we are supporting Python 3. There are several ways to install Cornac:
   python3 setup.py install
   ```
 
+Using docker, first clone repository as above and run: `docker build -t cornac .`. Then run `docker run -p 127.0.0.1:3773:22 --expose 22 --ipc=host  --gpus all -v ${PWD}:/app  -it --entrypoint /bin/bash --name sshtest cornac` and when inside docker use the install command from above. It may be necessary to run `python setup.py build_ext --inplace`.
+
 **Note:** 
 
 Additional dependencies required by models are listed [here](README.md#Models).

@@ -1,0 +1,6 @@
+results/*
+experiment/*
+statistics/output/*
+.*
+build/*
+
