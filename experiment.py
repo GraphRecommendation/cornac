@@ -12,14 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ============================================================================
-import argparse
 import inspect
 import pickle
 
-import os
 from copy import deepcopy
 
-import cornac as cornac
 import torch
 
 from cornac.datasets import amazon_cellphone_seer, amazon_computer_seer
@@ -156,11 +153,11 @@ def run(in_kwargs, dataset, method, save_dir='.'):
             'seed': 42,
             'max_num_review': 50
         }
-        from cornac.models import NARRE, NARRE_BPR
+        from cornac.models import NARRE, NARRE_BPR, HRDR, HRDR_BPR
         if in_kwargs.get('use_bpr', False):
-            model = NARRE_BPR
+            model = NARRE_BPR if method == 'narre' else HRDR_BPR
         else:
-            model = NARRE
+            model = NARRE if method == 'narre' else HRDR
     elif method == 'bpr':
         from cornac.models import BPR
         default_kwargs = {
@@ -196,26 +193,6 @@ def run(in_kwargs, dataset, method, save_dir='.'):
 
         from cornac.models import NGCF
         model = NGCF
-    # elif method == 'lightrla':
-    #     default_kwargs = {
-    #         'use_cuda': True,
-    #         'use_uva': False,
-    #         'batch_size': 256,
-    #         'num_workers': 5,
-    #         'num_epochs': 10,
-    #         'learning_rate': 0.0001,
-    #         'l2_weight': 1e-5,
-    #         'node_dim': 64,
-    #         'layer_dims': [64, 64, 64],
-    #         'model_selection': 'best',
-    #         'layer_dropout': .1,
-    #         'user_based': user_based,
-    #         'debug': False,
-    #         'out_path': save_dir,
-    #         'verbose': True
-    #     }
-    #
-    #     model = cornac.models.LightRLA
     else:
         raise NotImplementedError
 

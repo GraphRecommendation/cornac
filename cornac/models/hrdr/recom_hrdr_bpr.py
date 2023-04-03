@@ -15,6 +15,7 @@
 
 import os
 import numpy as np
+from cornac.metrics import NDCG
 from tqdm.auto import trange
 
 from ..recommender import Recommender
@@ -84,7 +85,7 @@ class HRDR_BPR(Recommender):
 
         if self.trainable:
             if not hasattr(self, "model"):
-                from .hrdr import Model
+                from .hrdr_bpr import Model
                 self.model = Model(
                     self.train_set.num_users,
                     self.train_set.num_items,
@@ -149,11 +150,11 @@ class HRDR_BPR(Recommender):
                 self.P, self.Q, self.W1, self.bu, self.bi, self.mu, self.A = current_weights
                 [val_loss], _ = rating_eval(
                     model=self,
-                    metrics=[MSE()],
+                    metrics=[NDCG()],
                     test_set=self.val_set,
                     user_based=self.user_based
                 )
-                if best_val_loss > val_loss:
+                if best_val_loss < val_loss:
                     best_val_loss = val_loss
                     self.best_epoch = i_epoch + 1
                     best_weights = current_weights

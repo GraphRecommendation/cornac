@@ -38,6 +38,7 @@ from .hagerec import HAGERec
 from .hear import HEAR
 from .hft import HFT
 from .hpf import HPF
+from .hrdr import HRDR, HRDR_BPR
 from .ibpr import IBPR
 from .kgat import KGAT
 from .knn import ItemKNN
