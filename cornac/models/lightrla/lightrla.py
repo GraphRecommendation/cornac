@@ -264,12 +264,13 @@ class Model(nn.Module):
                 nn.init.xavier_normal_(parameter)
 
     def __init__(self, g, n_nodes, n_hyper_graph_types, n_lgcn_relations, aggregator, predictor, node_dim,
-                 num_heads, layer_dropout, attention_dropout, narre_preference='lightgcn', use_cuda=True):
+                 num_heads, layer_dropout, attention_dropout, preference_module='lightgcn', use_cuda=True,
+                 combiner='add'):
         super().__init__()
 
         self.aggregator = aggregator
         self.predictor = predictor
-        self.narre_preference = narre_preference
+        self.preference_module = preference_module
         self.node_dim = node_dim
         self.num_heads = num_heads
 
@@ -290,7 +291,11 @@ class Model(nn.Module):
             self.w_0 = nn.Linear(node_dim, node_dim)
 
         final_dim = node_dim
-        if predictor == 'bi-interaction':
+        self.combiner = combiner
+        assert combiner in ['add', 'mul', 'bi-interaction', 'concat']
+        if combiner == 'concat':
+            node_dim *= 2
+        elif combiner == 'bi-interaction':
             self.add_mlp = nn.Sequential(
                 nn.Linear(node_dim, node_dim),
                 nn.Tanh()
@@ -299,10 +304,11 @@ class Model(nn.Module):
                 nn.Linear(node_dim, node_dim),
                 nn.Tanh()
             )
-        elif self.predictor == 'narre':
-            self.edge_predictor = dgl.nn.EdgePredictor('ele', 2*node_dim, 1, bias=True)
+
+        if self.predictor == 'narre':
+            self.edge_predictor = dgl.nn.EdgePredictor('ele', node_dim, 1, bias=True)
             self.bias = nn.Parameter(torch.zeros((n_nodes, 1)))
-            final_dim = 2*node_dim
+
 
         self.aos_predictor = AOSPredictionLayer(2*node_dim, 2*final_dim, [node_dim, 64, 32], 2)
         self.rating_loss_fn = nn.MSELoss(reduction='mean')
@@ -355,12 +361,14 @@ class Model(nn.Module):
 
     def forward(self, blocks, x):
         blocks, lgcn_blocks = blocks
-        if self.narre_preference == 'lightgcn':
+        if self.preference_module == 'lightgcn':
             lx = self.lightgcn(lgcn_blocks[0].ndata[dgl.NID], lgcn_blocks[:-1])
-        else:
+        elif self.preference_module == 'mf':
             # Get user/item representation without any graph convolutions.
             lx = {ntype: self.lightgcn.features[ntype](nids) for ntype, nids in
                   lgcn_blocks[-1].srcdata[dgl.NID].items() if ntype != 'node'}
+        else:
+            raise NotImplementedError(f'{self.preference_module} is not supported')
 
         g = lgcn_blocks[-1]
         with g.local_scope():
@@ -376,10 +384,14 @@ class Model(nn.Module):
 
         x, lx = self.node_dropout(x), self.node_dropout(lx)
 
-        if self.predictor == 'narre':
+        if self.combiner == 'concat':
             x = torch.cat([x, lx], dim=-1)
+        elif self.combiner == 'add':
+            x = x + lx
         elif self.predictor == 'bi-interaction':
-            x = [x, lx]
+            a = self.add_mlp(x + lx)
+            m = self.mul_mlp(x * lx)
+            x = a + m
         else:
             x = x * lx
 
@@ -403,23 +415,11 @@ class Model(nn.Module):
 
             return out
 
-    def _graph_bi_interaction(self, g: dgl.DGLGraph, x):
-        x, lx = x
-        with g.local_scope():
-            a = self.add_mlp(x + lx)
-            m = self.mul_mlp(x * lx)
-            x = a + m
-            pred = self._graph_predict_dot(g, x)
-
-            return pred
-
     def graph_predict(self, g: dgl.DGLGraph, x):
         if self.predictor == 'dot':
             return self._graph_predict_dot(g, x)
         elif self.predictor == 'narre':
             return self._graph_predict_narre(g, x)
-        elif self.predictor == 'bi-interaction':
-            return self._graph_bi_interaction(g, x)
         else:
             raise ValueError(f'Predictor not implemented for "{self.predictor}".')
 
@@ -440,22 +440,10 @@ class Model(nn.Module):
         return (u_emb * i_emb).sum(-1)
 
     def _predict_narre(self, user, item, u_emb, i_emb):
-        lu_emb, li_emb = self.lemb[user], self.lemb[item]
-
-        u = torch.cat([u_emb, lu_emb], dim=-1)
-        i = torch.cat([i_emb, li_emb], dim=-1)
-
-        h = self.edge_predictor(u, i)
+        h = self.edge_predictor(u_emb, i_emb)
         h += (self.bias[user] + self.bias[item])
 
         return h.reshape(-1, 1)
-
-    def _predict_bi_interaction(self, user, item, u_emb, i_emb):
-        lu_emb, li_emb = self.lemb[user], self.lemb[item]
-        u_emb = self.add_mlp(u_emb + lu_emb) + self.mul_mlp(u_emb * lu_emb)
-        i_emb = self.add_mlp(i_emb + li_emb) + self.mul_mlp(i_emb * li_emb)
-        pred = self._predict_dot(u_emb, i_emb)
-        return pred
 
     def aos_predict(self, user, item, aspect, opinion, sentiment):
         u_emb, i_emb = self.inf_emb[user], self.inf_emb[item]
@@ -475,14 +463,29 @@ class Model(nn.Module):
 
     def predict(self, user, item):
         u_emb, i_emb = self.inf_emb[user], self.inf_emb[item]
+        lu_emb, li_emb = self.lemb[user], self.lemb[item]
+
+        if self.combiner == 'concat':
+            u_emb = torch.cat([u_emb, lu_emb], dim=-1)
+            i_emb = torch.cat([i_emb, li_emb], dim=-1)
+        elif self.combiner == 'add':
+            u_emb += lu_emb
+            i_emb += li_emb
+        elif self.predictor == 'bi-interaction':
+            a = self.add_mlp(u_emb + lu_emb)
+            m = self.mul_mlp(u_emb * lu_emb)
+            u_emb = a + m
+            a = self.add_mlp(i_emb + li_emb)
+            m = self.mul_mlp(i_emb * li_emb)
+            i_emb = a + m
+        else:
+            u_emb *= lu_emb
+            i_emb *= li_emb
 
         if self.predictor == 'dot':
-            u_emb, i_emb = u_emb * self.lemb[user], i_emb * self.lemb[item]
             pred = self._predict_dot(u_emb, i_emb)
         elif self.predictor == 'narre':
             pred = self._predict_narre(user, item, u_emb, i_emb)
-        elif self.predictor == 'bi-interaction':
-            pred = self._predict_bi_interaction(user, item, u_emb, i_emb)
         else:
             raise ValueError(f'Predictor not implemented for "{self.predictor}".')
 
@@ -535,7 +538,7 @@ class Model(nn.Module):
             self.review_attention[blocks[0]['part_of'].edata[dgl.EID]] = a
 
         # Node preference embedding
-        if self.narre_preference == 'lightgcn':
+        if self.preference_module == 'lightgcn':
             self.lightgcn.inference(ui_graph, batch_size)
             x = self.lightgcn.embeddings
         else:

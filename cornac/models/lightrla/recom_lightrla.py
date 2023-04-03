@@ -39,6 +39,7 @@ class LightRLA(Recommender):
                  review_aggregator='narre',
                  predictor='gatv2',
                  preference_module='lightgcn',
+                 combiner='add',
                  graph_type='ao',
                  num_neg_samples=50,
                  layer_dropout=None,
@@ -82,6 +83,7 @@ class LightRLA(Recommender):
         self.review_aggregator = review_aggregator
         self.predictor = predictor
         self.preference_module = preference_module
+        self.combiner = combiner
         self.graph_type = graph_type
         self.num_neg_samples = num_neg_samples
         self.layer_dropout = layer_dropout
@@ -92,7 +94,7 @@ class LightRLA(Recommender):
         parameter_list = ['batch_size', 'learning_rate', 'weight_decay', 'node_dim', 'num_heads',
                           'fanout', 'use_relation', 'model_selection', 'review_aggregator', 'objective',
                           'predictor', 'preference_module', 'layer_dropout', 'attention_dropout', 'stemming',
-                          'learn_explainability', 'popularity_biased_sampling']
+                          'learn_explainability', 'popularity_biased_sampling', 'combiner']
         self.parameters = collections.OrderedDict({k: self.__getattribute__(k) for k in parameter_list})
 
         # Method
@@ -441,7 +443,7 @@ class LightRLA(Recommender):
         # create model
         self.model = Model(self.ui_graph, n_nodes, self.n_relations, n_r_types, self.review_aggregator,
                            self.predictor, self.node_dim, self.num_heads, [self.layer_dropout]*2,
-                           self.attention_dropout, self.preference_module, self.use_cuda)
+                           self.attention_dropout, self.preference_module, self.use_cuda, combiner=self.combiner)
 
         self.model.reset_parameters()
 
