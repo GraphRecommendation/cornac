@@ -657,13 +657,15 @@ class LightRLA(Recommender):
         state = self.model.state_dict()
         torch.save(state, os.path.join(save_dir, str(self.index), name))
 
-        results_path = os.path.join(path.rsplit('/', 1)[0], 'results.csv')
-        header = not os.path.exists(results_path)
-        self.parameters['score'] = self.best_value
-        self.parameters['epoch'] = self.best_epoch
-        self.parameters['file'] = path.rsplit('/')[-1]
-        self.parameters['id'] = self.index
-        df = pd.DataFrame({k: [v] for k, v in self.parameters.items()})
-        df.to_csv(results_path, header=header, mode='a', index=False)
+        # results_path = os.path.join(path.rsplit('/', 1)[0], 'results.csv')
+        # header = not os.path.exists(results_path)
+        # self.parameters['score'] = self.best_value
+        # self.parameters['epoch'] = self.best_epoch
+        # self.parameters['file'] = path.rsplit('/')[-1]
+        # self.parameters['id'] = self.index
+        # df = pd.DataFrame({k: [v] for k, v in self.parameters.items()})
+        # df.to_csv(results_path, header=header, mode='a', index=False)
+
+        return path
 
 

@@ -16,6 +16,9 @@ import argparse
 import inspect
 import pickle
 
+import os
+from copy import deepcopy
+
 import cornac as cornac
 import torch
 
@@ -263,10 +266,13 @@ def run(in_kwargs, dataset, method, save_dir='.'):
     else:
         raise ValueError(f'No metrics for objective: {objective}.')
 
+    dk = deepcopy(default_kwargs)
+    dk['id'] = in_kwargs.get('index', 0)
+
     cornac.Experiment(
         eval_method=eval_method, models=[model], metrics=metrics,
         user_based=user_based, save_dir=save_dir, verbose=default_kwargs.get('verbose', True)
-    ).run()
+    ).run(store_experiment=True, parameters=dk)
 
 
 if __name__ == '__main__':

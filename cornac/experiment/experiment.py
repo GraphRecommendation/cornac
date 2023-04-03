@@ -123,8 +123,9 @@ class Experiment:
             if self.show_validation and self.eval_method.val_set is not None:
                 self.val_result = ExperimentResult()
 
-    def run(self):
-        """Run the Cornac experiment"""
+    def run(self, store_experiment=False, parameters=None):
+        import pandas as pd
+        """Run the Cornac experiment. Parameters only work if single method is passed."""
         self._create_result()
 
         for model in self.models:
@@ -140,7 +141,19 @@ class Experiment:
                 self.val_result.append(val_result)
 
             if not isinstance(self.result, CVExperimentResult):
-                model.save(self.save_dir)
+                mf = model.save(self.save_dir)
+
+            if store_experiment:
+                if parameters is None:
+                    parameters = {}
+
+                results_path = os.path.join(self.save_dir, model.name, 'results.csv')
+                header = not os.path.exists(results_path)
+                parameters['score'] = model.best_value
+                parameters['epoch'] = model.best_epoch
+                parameters['file'] = mf.rsplit('/')[-1]
+                df = pd.DataFrame({k: [v] for k, v in parameters.items()})
+                df.to_csv(results_path, header=header, mode='a', index=False)
 
         output = ""
         if self.val_result is not None:
