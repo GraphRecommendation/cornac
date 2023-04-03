@@ -123,7 +123,7 @@ class Experiment:
             if self.show_validation and self.eval_method.val_set is not None:
                 self.val_result = ExperimentResult()
 
-    def run(self, store_experiment=False, parameters=None):
+    def run(self, store_experiment=False, parameters=None, metric='NDCG@-1'):
         import pandas as pd
         """Run the Cornac experiment. Parameters only work if single method is passed."""
         self._create_result()
@@ -149,7 +149,7 @@ class Experiment:
 
                 results_path = os.path.join(self.save_dir, model.name, 'results.csv')
                 header = not os.path.exists(results_path)
-                parameters['score'] = model.best_value
+                parameters['score'] = val_result.metric_avg_results[metric]
                 parameters['epoch'] = model.best_epoch
                 parameters['file'] = mf.rsplit('/')[-1]
                 df = pd.DataFrame({k: [v] for k, v in parameters.items()})

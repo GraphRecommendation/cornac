@@ -97,7 +97,6 @@ def create_hyperparameter_dict(comb, model_parameters, shared_parameters):
 
 def run(dataset, method):
     global shared_hyperparameters, lightrla_hyperparameters, GPUS
-
     if method == 'lightrla':
         parameters = lightrla_hyperparameters
     elif method == 'light2':
@@ -164,5 +163,8 @@ if __name__ == '__main__':
     datasets = config['DATASETS'] if 'DATASETS' in config else [config['DATASET']]
     methods = config['METHODS'] if 'METHODS' in config else [config['METHOD']]
     for dataset in datasets:
+
+        print('----', dataset, '----')
         for method in methods:
+            print('--', method, '--')
             run(dataset, method)
