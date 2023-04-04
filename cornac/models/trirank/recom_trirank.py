@@ -15,6 +15,7 @@ class TriRank(Recommender):
         self.mu_U = mu_U
         self.mu_P = mu_P
         self.mu_A = mu_A
+        self.epsilon = 1e-6
         self.verbose = verbose
         self.user_based = user_based
 
@@ -126,17 +127,17 @@ class TriRank(Recommender):
         prev_u = u_v
         while not converged:
             # eq. 4
-            u_v = self.alpha / (self.alpha + self.gamma + self.mu_U) * self.S_R * p_v +\
-                self.gamma / (self.alpha + self.gamma + self.mu_U) * self.S_Y * a_v +\
-                self.mu_U / (self.alpha + self.gamma + self.mu_U) * u_0
+            u_v = self.alpha / (self.alpha + self.gamma + self.mu_U + self.epsilon) * self.S_R * p_v +\
+                self.gamma / (self.alpha + self.gamma + self.mu_U + self.epsilon) * self.S_Y * a_v +\
+                self.mu_U / (self.alpha + self.gamma + self.mu_U + self.epsilon) * u_0
             u_v = u_v.squeeze()
-            p_v = self.alpha / (self.alpha + self.beta + self.mu_P) * self.S_R.T * u_v +\
-                self.beta / (self.alpha + self.beta + self.mu_P) * self.S_X * a_v +\
-                self.mu_P / (self.alpha + self.beta + self.mu_P) * p_0
+            p_v = self.alpha / (self.alpha + self.beta + self.mu_P + self.epsilon) * self.S_R.T * u_v +\
+                self.beta / (self.alpha + self.beta + self.mu_P + self.epsilon) * self.S_X * a_v +\
+                self.mu_P / (self.alpha + self.beta + self.mu_P + self.epsilon) * p_0
             p_v = p_v.squeeze()
-            a_v = self.gamma / (self.gamma + self.beta + self.mu_A) * self.S_Y.T * u_v +\
-                self.beta / (self.gamma + self.beta + self.mu_A) * self.S_X.T * p_v +\
-                self.mu_P / (self.gamma + self.beta + self.mu_A) * a_0
+            a_v = self.gamma / (self.gamma + self.beta + self.mu_A + self.epsilon) * self.S_Y.T * u_v +\
+                self.beta / (self.gamma + self.beta + self.mu_A + self.epsilon) * self.S_X.T * p_v +\
+                self.mu_P / (self.gamma + self.beta + self.mu_A + self.epsilon) * a_0
             a_v = a_v.squeeze()
 
             if np.all(np.isclose(u_v, prev_u)) and np.all(np.isclose(p_v, prev_p)) and np.all(np.isclose(a_v, prev_a)):
