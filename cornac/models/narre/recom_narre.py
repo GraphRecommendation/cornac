@@ -190,9 +190,9 @@ class NARRE(Recommender):
         loss = keras.losses.MeanSquaredError()
         if not hasattr(self, 'optimizer_'):
             if self.optimizer == 'rmsprop':
-                optimizer_ = keras.optimizers.RMSprop(learning_rate=self.learning_rate)
+                self.optimizer_ = keras.optimizers.RMSprop(learning_rate=self.learning_rate)
             elif self.optimizer == 'adam':
-                optimizer_ = keras.optimizers.Adam(learning_rate=self.learning_rate)
+                self.optimizer_ = keras.optimizers.Adam(learning_rate=self.learning_rate)
             else:
                 raise ValueError("optimizer is either 'rmsprop' or 'adam' but {}".format(self.optimizer))
 
@@ -213,7 +213,7 @@ class NARRE(Recommender):
                     )
                     _loss = loss(batch_ratings, predictions)
                 gradients = tape.gradient(_loss, self.model.graph.trainable_variables)
-                optimizer_.apply_gradients(zip(gradients, self.model.graph.trainable_variables))
+                self.optimizer_.apply_gradients(zip(gradients, self.model.graph.trainable_variables))
                 train_loss(_loss)
                 if i % 10 == 0:
                     loop.set_postfix(loss=train_loss.result().numpy(), val_loss=val_loss, best_val_loss=best_val_loss, best_epoch=self.best_epoch)
@@ -255,9 +255,11 @@ class NARRE(Recommender):
             return
         model = self.model
         del self.model
-
+        optimizer_ = self.optimizer_
+        del self.optimizer_
         model_file = Recommender.save(self, save_dir)
 
+        self.optimizer_ = optimizer_
         self.model = model
         self.model.graph.save(model_file.replace(".pkl", ".cpt"))
 

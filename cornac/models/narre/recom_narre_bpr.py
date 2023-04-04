@@ -14,7 +14,7 @@
 # ============================================================================
 
 import os
-
+import numpy as np
 from tqdm.auto import trange
 
 from ..recommender import Recommender
@@ -99,18 +99,17 @@ class NARRE_BPR(Recommender):
         n_filters=64,
         dropout_rate=0.5,
         max_text_length=50,
-        max_num_review=10,
+        max_num_review=None,
         batch_size=64,
         max_iter=10,
         optimizer='adam',
         learning_rate=0.001,
         model_selection='last', # last or best
-        early_stopping=None,
         user_based=True,
         trainable=True,
         verbose=True,
         init_params=None,
-        seed=42,
+        seed=None,
     ):
         super().__init__(name=name, trainable=trainable, verbose=verbose)
         self.seed = seed
@@ -128,7 +127,6 @@ class NARRE_BPR(Recommender):
         self.optimizer = optimizer
         self.learning_rate = learning_rate
         self.model_selection = model_selection
-        self.early_stopping = early_stopping
         self.user_based = user_based
         # Init params if provided
         self.init_params = {} if init_params is None else init_params
@@ -181,15 +179,15 @@ class NARRE_BPR(Recommender):
         from .narre import get_data
         from .narre_bpr import get_item_review_pairs
         from ...eval_methods.base_method import ranking_eval
-        from ...metrics import AUC, NDCG
+        from ...metrics import NDCG
         if not hasattr(self, 'optimizer_'):
             if self.optimizer == 'rmsprop':
-                optimizer_ = keras.optimizers.RMSprop(learning_rate=self.learning_rate)
+                self.optimizer_ = keras.optimizers.RMSprop(learning_rate=self.learning_rate)
             else:
-                optimizer_ = keras.optimizers.Adam(learning_rate=self.learning_rate)
+                self.optimizer_ = keras.optimizers.Adam(learning_rate=self.learning_rate)
         train_loss = keras.metrics.Mean(name="loss")
         val_loss = 0.
-        best_val_loss = 0
+        best_val_loss = 1e9
         self.best_epoch = None
         loop = trange(self.max_iter, disable=not self.verbose, bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}')
         for i_epoch, _ in enumerate(loop):
@@ -208,40 +206,36 @@ class NARRE_BPR(Recommender):
                         training=True,
                     )
                 gradients = tape.gradient(loss, self.model.graph.trainable_variables)
-                optimizer_.apply_gradients(zip(gradients, self.model.graph.trainable_variables))
+                self.optimizer_.apply_gradients(zip(gradients, self.model.graph.trainable_variables))
                 train_loss(loss)
                 if i % 10 == 0:
-                    loop.set_postfix(loss=train_loss.result().numpy(), vl=val_loss, bvl=best_val_loss, be=self.best_epoch)
+                    loop.set_postfix(loss=train_loss.result().numpy(), val_loss=val_loss, best_val_loss=best_val_loss, best_epoch=self.best_epoch)
             current_weights = self.model.get_weights(self.train_set, self.batch_size, max_num_review=self.max_num_review)
             if self.val_set is not None:
                 self.X, self.Y, self.W1, self.user_embedding, self.item_embedding, self.bu, self.bi, self.mu, self.A = current_weights
-                # self.X, self.Y, self.W1, self.A = current_weights
-                [current_val_ndcg], _ = ranking_eval(
+                [current_val_auc], _ = ranking_eval(
                     model=self,
                     metrics=[NDCG()],
                     train_set=self.train_set,
                     test_set=self.val_set,
                 )
-                val_loss = current_val_ndcg
-                if best_val_loss < val_loss:
+                val_loss = current_val_auc
+                if best_val_loss > val_loss:
                     best_val_loss = val_loss
                     self.best_epoch = i_epoch + 1
                     best_weights = current_weights
-                loop.set_postfix(loss=train_loss.result().numpy(), vl=val_loss, bvl=best_val_loss, be=self.best_epoch)
+                loop.set_postfix(loss=train_loss.result().numpy(), val_loss=val_loss, best_val_loss=best_val_loss, best_epoch=self.best_epoch)
             self.losses["train_losses"].append(train_loss.result().numpy())
             self.losses["val_losses"].append(val_loss)
-            if self.early_stopping is not None and i_epoch-self.best_epoch >= self.early_stopping:
-                break
         loop.close()
 
         # save weights for predictions
         self.X, self.Y, self.W1, self.user_embedding, self.item_embedding, self.bu, self.bi, self.mu, self.A = best_weights if self.val_set is not None and self.model_selection == 'best' else current_weights
-        # self.X, self.Y, self.W1, self.A = best_weights if self.val_set is not None and self.model_selection == 'best' else current_weights
         if self.verbose:
             print("Learning completed!")
 
+
     def save(self, save_dir=None):
-        import datetime
         """Save a recommender model to the filesystem.
 
         Parameters
@@ -254,14 +248,12 @@ class NARRE_BPR(Recommender):
             return
         model = self.model
         del self.model
-
-        # model_dir = os.path.join(save_dir, self.name)
-        # os.makedirs(model_dir, exist_ok=True)
-        # timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
-        # model_file = os.path.join(model_dir, "{}.pkl".format(timestamp))
+        optimizer_ = self.optimizer_
+        del self.optimizer_
 
         model_file = Recommender.save(self, save_dir)
 
+        self.optimizer_ = optimizer_
         self.model = model
         self.model.graph.save(model_file.replace(".pkl", ".cpt"))
 
@@ -287,26 +279,7 @@ class NARRE_BPR(Recommender):
         """
         from tensorflow import keras
         model = Recommender.load(model_path, trainable)
-
-        from cornac.models.narre.narre_bpr import Model
-        model.model = Model(
-                    model.train_set.num_users,
-                    model.train_set.num_items,
-                    model.train_set.review_text.vocab,
-                    model.train_set.global_mean,
-                    n_factors=model.n_factors,
-                    embedding_size=model.embedding_size,
-                    id_embedding_size=model.id_embedding_size,
-                    attention_size=model.attention_size,
-                    kernel_sizes=model.kernel_sizes,
-                    n_filters=model.n_filters,
-                    dropout_rate=model.dropout_rate,
-                    max_text_length=model.max_text_length,
-                    pretrained_word_embeddings=model.init_params.get('pretrained_word_embeddings'),
-                    verbose=model.verbose,
-                    seed=model.seed,
-                )
-        model.model.graph.load_weights(model_path.replace(".pkl", ".cpt"))
+        model.model = keras.models.load_model(model.load_from.replace(".pkl", ".cpt"))
 
         return model
 
@@ -332,10 +305,8 @@ class NARRE_BPR(Recommender):
                 raise ScoreException(
                     "Can't make score prediction for (user_id=%d)" % user_idx
                 )
-            # h0 = (self.user_embedding[user_idx] + self.X[user_idx]) * (self.item_embedding + self.Y)
-            # known_item_scores = h0.dot(self.W1) + self.bu[user_idx] + self.bi + self.mu
-            h0 = self.X[user_idx] * self.Y
-            known_item_scores = h0.dot(self.W1)
+            h0 = (self.user_embedding[user_idx] + self.X[user_idx]) * (self.item_embedding + self.Y)
+            known_item_scores = h0.dot(self.W1) + self.bu[user_idx] + self.bi + self.mu
             return known_item_scores.ravel()
         else:
             if self.train_set.is_unk_user(user_idx) or self.train_set.is_unk_item(
