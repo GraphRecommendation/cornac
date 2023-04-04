@@ -237,11 +237,13 @@ class HRDR(Recommender):
             return
         model = self.model
         del self.model
-
+        optimizer_ = self.optimizer_
+        del self.optimizer_
         model_file = Recommender.save(self, save_dir)
 
+        self.optimizer_ = optimizer_
         self.model = model
-        self.model.save(model_file.replace(".pkl", ".cpt"))
+        self.model.graph.save(model_file.replace(".pkl", ".cpt"))
 
         return model_file
 

@@ -6,6 +6,7 @@ from tensorflow.keras import layers, initializers, Input
 from ...utils import get_rng
 from ...utils.init_utils import uniform
 from ..narre.narre import TextProcessor, AddGlobalBias
+from ..narre.narre_bpr import get_item_review_pairs
 from .hrdr import get_data
 
 
@@ -78,101 +79,104 @@ class Model:
         item_j_review_h = item_text_processor(l_item_review_embedding(i_item_j_review), training=True)
 
         l_user_mlp = keras.models.Sequential([
-            layers.Dense(self.n_user_mlp_factors, input_dim=self.n_items, activation="relu"),
-            layers.Dense(self.n_user_mlp_factors // 2, activation="relu"),
-            layers.Dense(self.n_filters, activation="relu"),
-            layers.BatchNormalization(),
-        ])
+            layers.Dense(self.n_user_mlp_factors, input_dim=self.n_items, activation="relu", name="user_mlp_dense_1"),
+            layers.Dense(self.n_user_mlp_factors // 2, activation="relu", name="user_mlp_dense_2"),
+            layers.Dense(self.n_filters, activation="relu", name="user_mlp_dense_3"),
+            layers.BatchNormalization(name="user_mlp_batch_norm"),
+        ], name="user_mlp")
         l_item_mlp = keras.models.Sequential([
-            layers.Dense(self.n_item_mlp_factors, input_dim=self.n_users, activation="relu"),
-            layers.Dense(self.n_item_mlp_factors // 2, activation="relu"),
-            layers.Dense(self.n_filters, activation="relu"),
-            layers.BatchNormalization(),
-        ])
+            layers.Dense(self.n_item_mlp_factors, input_dim=self.n_users, activation="relu", name="item_mlp_dense_1"),
+            layers.Dense(self.n_item_mlp_factors // 2, activation="relu", name="item_mlp_dense_2"),
+            layers.Dense(self.n_filters, activation="relu", name="item_mlp_dense_3"),
+            layers.BatchNormalization(name="item_mlp_batch_norm"),
+        ], name="item_mlp")
         user_rating_h = l_user_mlp(i_user_rating)
         item_i_rating_h = l_item_mlp(i_item_i_rating)
         item_j_rating_h = l_item_mlp(i_item_j_rating)
         # mlp
-        a_user = layers.Dense(1, activation=None, use_bias=True)(
-            layers.Dense(self.attention_size, activation="relu", use_bias=True)(
+        a_user = layers.Dense(1, activation=None, use_bias=True, name="user_review_rating_attention_dense")(
+            layers.Dense(self.attention_size, activation="relu", use_bias=True, name="user_review_rating_dense")(
                 tf.multiply(
                     user_review_h,
-                    tf.expand_dims(user_rating_h, 1)
+                    tf.expand_dims(user_rating_h, 1, name="user_rating_expand_dim"),
+                    name="user_review_multiply_user_rating"
                 )
             )
         )
-        a_user_masking = tf.expand_dims(tf.sequence_mask(tf.reshape(i_user_num_reviews, [-1]), maxlen=i_user_review.shape[1]), -1)
+        a_user_masking = tf.expand_dims(tf.sequence_mask(tf.reshape(i_user_num_reviews, [-1], name="user_num_review_reshape"), maxlen=i_user_review.shape[1], name="user_num_review_masking"), -1, name="user_num_review_masking_expand_dim")
         user_attention = layers.Softmax(axis=1, name="user_attention")(a_user, a_user_masking)
 
-        a_item_i = layers.Dense(1, activation=None, use_bias=True)(
-            layers.Dense(self.attention_size, activation="relu", use_bias=True)(
+        a_item_i = layers.Dense(1, activation=None, use_bias=True, name="item_i_review_rating_attention_dense")(
+            layers.Dense(self.attention_size, activation="relu", use_bias=True, name="item_i_review_rating_dense")(
                 tf.multiply(
                     item_i_review_h,
-                    tf.expand_dims(item_i_rating_h, 1)
+                    tf.expand_dims(item_i_rating_h, 1, name="item_i_rating_expand_dim"),
+                    name="item_i_review_multiply_rating"
                 )
             )
         )
-        a_item_j = layers.Dense(1, activation=None, use_bias=True)(
-            layers.Dense(self.attention_size, activation="relu", use_bias=True)(
+        a_item_j = layers.Dense(1, activation=None, use_bias=True, name="item_j_review_rating_attention_dense")(
+            layers.Dense(self.attention_size, activation="relu", use_bias=True, name="item_j_review_rating_dense")(
                 tf.multiply(
                     item_j_review_h,
-                    tf.expand_dims(item_j_rating_h, 1)
+                    tf.expand_dims(item_j_rating_h, 1, name="item_j_rating_expand_dim"),
+                    name="item_j_review_multiply_rating"
                 )
             )
         )
-        a_item_i_masking = tf.expand_dims(tf.sequence_mask(tf.reshape(i_item_i_num_reviews, [-1]), maxlen=i_item_i_review.shape[1]), -1)
+        a_item_i_masking = tf.expand_dims(tf.sequence_mask(tf.reshape(i_item_i_num_reviews, [-1], name="item_i_num_review_reshape"), maxlen=i_item_i_review.shape[1], name="item_i_num_review_masking"), -1, name="item_i_num_review_masking_expand_dim")
         item_i_attention = layers.Softmax(axis=1, name="item_i_attention")(a_item_i, a_item_i_masking)
-        a_item_j_masking = tf.expand_dims(tf.sequence_mask(tf.reshape(i_item_j_num_reviews, [-1]), maxlen=i_item_j_review.shape[1]), -1)
+        a_item_j_masking = tf.expand_dims(tf.sequence_mask(tf.reshape(i_item_j_num_reviews, [-1], name="item_j_num_review_reshape"), maxlen=i_item_j_review.shape[1], name="item_j_num_review_masking"), -1, name="item_j_num_review_masking_expand_dim")
         item_j_attention = layers.Softmax(axis=1, name="item_j_attention")(a_item_j, a_item_j_masking)
 
         ou = layers.Dense(self.n_factors, use_bias=True, name="ou")(
-            layers.Dropout(rate=self.dropout_rate)(
-                tf.reduce_sum(layers.Multiply()([user_attention, user_review_h]), 1)
+            layers.Dropout(rate=self.dropout_rate, name="user_o_dropout")(
+                tf.reduce_sum(layers.Multiply(name="user_attention_user_review")([user_attention, user_review_h]), 1, name="user_attention_user_review_sum")
             )
         )
         oi = layers.Dense(self.n_factors, use_bias=True, name="oi")(
-            layers.Dropout(rate=self.dropout_rate)(
-                tf.reduce_sum(layers.Multiply()([item_i_attention, item_i_review_h]), 1)
+            layers.Dropout(rate=self.dropout_rate, name="item_i_dropout")(
+                tf.reduce_sum(layers.Multiply(name="item_i_attention_item_i_review")([item_i_attention, item_i_review_h]), 1, name="item_i_attention_item_i_review_sum")
             )
         )
         oj = layers.Dense(self.n_factors, use_bias=True, name="oj")(
-            layers.Dropout(rate=self.dropout_rate)(
-                tf.reduce_sum(layers.Multiply()([item_j_attention, item_j_review_h]), 1)
+            layers.Dropout(rate=self.dropout_rate, name="item_j_dropout")(
+                tf.reduce_sum(layers.Multiply(name="item_j_attention_item_j_review")([item_j_attention, item_j_review_h]), 1, name="item_j_attention_item_j_review_sum")
             )
         )
 
         pu = layers.Concatenate(axis=-1, name="pu")([
-            tf.expand_dims(user_rating_h, 1),
-            tf.expand_dims(ou, axis=1),
+            tf.expand_dims(user_rating_h, 1, name="user_rating_h_expand_dim"),
+            tf.expand_dims(ou, axis=1, name="ou_expand_dim"),
             l_user_embedding(i_user_id)
         ])
 
         qi = layers.Concatenate(axis=-1, name="qi")([
-            tf.expand_dims(item_i_rating_h, 1),
-            tf.expand_dims(oi, axis=1),
+            tf.expand_dims(item_i_rating_h, 1, name="item_i_rating_h_expand_dim"),
+            tf.expand_dims(oi, axis=1, name="oi_expand_dim"),
             l_item_embedding(i_item_i_id)
         ])
         qj = layers.Concatenate(axis=-1, name="qj")([
-            tf.expand_dims(item_j_rating_h, 1),
-            tf.expand_dims(oj, axis=1),
+            tf.expand_dims(item_j_rating_h, 1, name="item_j_rating_h_expand_dim"),
+            tf.expand_dims(oj, axis=1, name="oj_expand_dim"),
             l_item_embedding(i_item_j_id)
         ])
 
         W1 = layers.Dense(1, activation=None, use_bias=False, name="W1")
         add_global_bias = AddGlobalBias(init_value=self.global_mean, name="global_bias")
         r_i = layers.Add(name="prediction_i")([
-            W1(tf.multiply(pu, qi)),
+            W1(tf.multiply(pu, qi, name="pu_multiply_qi")),
             user_bias(i_user_id),
             item_bias(i_item_i_id)
         ])
         r_i = add_global_bias(r_i)
         r_j = layers.Add(name="prediction_j")([
-            W1(tf.multiply(pu, qj)),
+            W1(tf.multiply(pu, qj, name="pu_multiply_qj")),
             user_bias(i_user_id),
             item_bias(i_item_j_id)
         ])
         r_j = add_global_bias(r_j)
-        x_ij = tf.reduce_mean(-tf.math.log(tf.nn.sigmoid(r_i-r_j)))
+        x_ij = tf.reduce_mean(-tf.math.log(tf.nn.sigmoid(r_i-r_j, name="sigmoid_rij"), name="log_sigmoid_rij"), name="log_sigmoid_rij_reduce_mean")
 
         self.graph = keras.Model(inputs=[
             i_user_id,
