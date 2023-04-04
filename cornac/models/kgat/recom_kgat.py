@@ -348,3 +348,5 @@ class KGAT(Recommender):
 
         state = self.model.state_dict()
         torch.save(state, os.path.join(save_dir, str(self.index), name))
+
+        return path
