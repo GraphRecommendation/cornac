@@ -114,13 +114,13 @@ def run(dataset, method):
     elif method in ['kgat', 'lightgcn', 'ngcf']:
         parameters = kgat_hyperparameters
     elif method == 'bpr':
-        parameters = bpr_hyperparameters,
+        parameters = bpr_hyperparameters
     elif method in ['narre', 'hrdr', 'narre-bpr', 'hrdr-bpr']:
         parameters = narre_hyperparameters
 
-        if method.endswith('bpr'):
+        if method.endswith('-bpr'):
             method = method.replace('-bpr', '')
-            parameters['use_bpr'] = True
+            parameters['use_bpr'] = [True]
 
     elif method == 'trirank':
         parameters = trirank_hyperparameters
