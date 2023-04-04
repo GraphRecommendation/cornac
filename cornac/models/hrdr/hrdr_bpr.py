@@ -6,7 +6,6 @@ from tensorflow.keras import layers, initializers, Input
 from ...utils import get_rng
 from ...utils.init_utils import uniform
 from ..narre.narre import TextProcessor, AddGlobalBias
-from ..narre.narre_bpr import get_item_review_pairs
 from .hrdr import get_data
 
 
@@ -124,7 +123,7 @@ class Model:
         a_item_i_masking = tf.expand_dims(tf.sequence_mask(tf.reshape(i_item_i_num_reviews, [-1]), maxlen=i_item_i_review.shape[1]), -1)
         item_i_attention = layers.Softmax(axis=1, name="item_i_attention")(a_item_i, a_item_i_masking)
         a_item_j_masking = tf.expand_dims(tf.sequence_mask(tf.reshape(i_item_j_num_reviews, [-1]), maxlen=i_item_j_review.shape[1]), -1)
-        item_j_attention = layers.Softmax(axis=1, name="item_j_attention")(a_item_i, a_item_j_masking)
+        item_j_attention = layers.Softmax(axis=1, name="item_j_attention")(a_item_j, a_item_j_masking)
 
         ou = layers.Dense(self.n_factors, use_bias=True, name="ou")(
             layers.Dropout(rate=self.dropout_rate)(
@@ -176,17 +175,17 @@ class Model:
         x_ij = tf.reduce_mean(-tf.math.log(tf.nn.sigmoid(r_i-r_j)))
 
         self.graph = keras.Model(inputs=[
-            i_user_id, 
-            i_item_i_id, 
+            i_user_id,
+            i_item_i_id,
             i_item_j_id,
-            i_user_rating, 
-            i_user_review, 
-            i_user_num_reviews, 
-            i_item_i_rating, 
-            i_item_i_review, 
+            i_user_rating,
+            i_user_review,
+            i_user_num_reviews,
+            i_item_i_rating,
+            i_item_i_review,
             i_item_i_num_reviews,
-            i_item_j_rating, 
-            i_item_j_review, 
+            i_item_j_rating,
+            i_item_j_review,
             i_item_j_num_reviews,
         ], outputs=x_ij)
         if self.verbose:
@@ -194,7 +193,7 @@ class Model:
 
     def get_weights(self, train_set, batch_size=64, max_num_review=32):
         user_attention_review_pooling = keras.Model(inputs=[self.graph.get_layer('input_user_id').input, self.graph.get_layer('input_user_rating').input, self.graph.get_layer('input_user_review').input, self.graph.get_layer('input_user_number_of_review').input], outputs=self.graph.get_layer('pu').output)
-        item_attention_pooling = keras.Model(inputs=[self.graph.get_layer('input_item_id').input, self.graph.get_layer('input_item_rating').input, self.graph.get_layer('input_item_review').input, self.graph.get_layer('input_item_number_of_review').input], outputs=[self.graph.get_layer('qi').output, self.graph.get_layer('item_attention').output])
+        item_attention_pooling = keras.Model(inputs=[self.graph.get_layer('input_item_i_id').input, self.graph.get_layer('input_item_i_rating').input, self.graph.get_layer('input_item_i_review').input, self.graph.get_layer('input_item_i_number_of_review').input], outputs=[self.graph.get_layer('qi').output, self.graph.get_layer('item_i_attention').output])
         P = np.zeros((self.n_users, self.n_filters + self.n_factors + self.id_embedding_size), dtype=np.float32)
         Q = np.zeros((self.n_items, self.n_filters + self.n_factors + self.id_embedding_size), dtype=np.float32)
         A = np.zeros((self.n_items, max_num_review), dtype=np.float32)

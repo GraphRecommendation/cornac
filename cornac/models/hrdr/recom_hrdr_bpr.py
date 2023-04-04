@@ -15,7 +15,6 @@
 
 import os
 import numpy as np
-from cornac.metrics import NDCG
 from tqdm.auto import trange
 
 from ..recommender import Recommender
@@ -111,9 +110,8 @@ class HRDR_BPR(Recommender):
         import tensorflow as tf
         from tensorflow import keras
         from .hrdr import get_data
-        from ...eval_methods.base_method import rating_eval
-        from ...metrics import MSE
-        loss = keras.losses.MeanSquaredError()
+        from ...eval_methods.base_method import ranking_eval
+        from ...metrics import NDCG
         if not hasattr(self, 'optimizer_'):
             if self.optimizer == 'rmsprop':
                 self.optimizer_ = keras.optimizers.RMSprop(learning_rate=self.learning_rate)
@@ -133,8 +131,8 @@ class HRDR_BPR(Recommender):
                 with tf.GradientTape() as tape:
                     loss = self.model.graph(
                         [
-                            batch_users, batch_i_items, batch_j_items, 
-                            user_ratings, user_reviews, user_num_reviews, 
+                            batch_users, batch_i_items, batch_j_items,
+                            user_ratings, user_reviews, user_num_reviews,
                             item_i_ratings, item_i_reviews, item_i_num_reviews,
                             item_j_ratings, item_j_reviews, item_j_num_reviews
                         ],
@@ -148,13 +146,14 @@ class HRDR_BPR(Recommender):
             current_weights = self.model.get_weights(self.train_set, self.batch_size, max_num_review=self.max_num_review)
             if self.val_set is not None:
                 self.P, self.Q, self.W1, self.bu, self.bi, self.mu, self.A = current_weights
-                [val_loss], _ = rating_eval(
+                [current_val_auc], _ = ranking_eval(
                     model=self,
                     metrics=[NDCG()],
+                    train_set=self.train_set,
                     test_set=self.val_set,
-                    user_based=self.user_based
                 )
-                if best_val_loss < val_loss:
+                val_loss = current_val_auc
+                if best_val_loss > val_loss:
                     best_val_loss = val_loss
                     self.best_epoch = i_epoch + 1
                     best_weights = current_weights
