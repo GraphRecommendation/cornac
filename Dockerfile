@@ -11,3 +11,5 @@ RUN python3 setup.py install
 
 ENV DGLBACKEND=pytorch
 ENV PYTHONPATH /app
+
+RUN apt install python-is-python3
