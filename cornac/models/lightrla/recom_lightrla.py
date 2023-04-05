@@ -13,8 +13,6 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from nltk.stem import PorterStemmer
-
 from ..recommender import Recommender
 from ...data import Dataset
 from ...utils.graph_construction import generate_mappings
@@ -524,6 +522,7 @@ class LightRLA(Recommender):
         best_score = 0 if metrics[0].higher_better else float('inf')
         best_epoch = 0
         epoch_length = len(dataloader)
+        all_nodes = torch.arange(next(iter(self.review_graphs.values())).num_nodes()).to(self.device)
         for e in range(self.num_epochs):
             tot_losses = defaultdict(int)
             cur_losses = {}
@@ -537,7 +536,7 @@ class LightRLA(Recommender):
                         else:
                             input_nodes, edge_subgraph, blocks = batch
 
-                        x = self.model(blocks, self.model.get_initial_embedings(input_nodes))
+                        x = self.model(blocks, self.model.get_initial_embedings(all_nodes), input_nodes)
 
                         pred = self.model.graph_predict(edge_subgraph, x)
 

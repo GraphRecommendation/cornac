@@ -129,11 +129,16 @@ class HearBlockSampler(dgl.dataloading.NeighborSampler):
         else:
             nid = [bg.nodes() for bg in r_gs]
 
-        batch = dgl.batch(r_gs)
-
-        # Get original ids
-        nid = torch.cat(nid)
-        batch.ndata[dgl.NID] = nid
+        # batch = dgl.batch(r_gs)
+        #
+        # # Get original ids
+        # nid = torch.cat(nid)
+        # batch.ndata[dgl.NID] = nid
+        bz = len(exclude_eids) if exclude_eids is not None else 256
+        n_batches = len(r_gs) // bz
+        n_batches += 1 if len(r_gs) % bz != 0 else 0
+        batch = [dgl.batch(r_gs[i*bz:(i+1)*bz]) for i in range(n_batches)]
+        nid = [torch.cat(nid[i*bz:(i+1)*bz]) for i in range(n_batches)]
 
         blocks.insert(0, batch)
         input_nodes = nid

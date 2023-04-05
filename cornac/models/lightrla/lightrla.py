@@ -5,6 +5,7 @@ import torch
 from dgl.ops import edge_softmax
 from torch import nn
 import dgl.function as fn
+from typing import List, Union
 
 import cornac.models.ngcf.ngcf
 from cornac.models.hear.dgl_utils import HearReviewDataset, HearReviewSampler, HearReviewCollator
@@ -78,17 +79,30 @@ class HypergraphLayer(nn.Module):
 
         return func
 
-    def forward(self, g: dgl.DGLGraph, x):
-        with g.local_scope():
-            g.ndata['h'] = x
-            out = [dgl.readout_nodes(g, 'h', op=self.op)]
-            for l in range(self.num_layers):
-                g.update_all(self.message('h', 'h',  'type', 'm', l), fn.sum('m', 'h'))
-                out.append(dgl.readout_nodes(g, 'h', op=self.op))
+    def forward(self, outer_g: Union[List[dgl.DGLGraph],dgl.DGLGraph], outer_x, input_nodes=None):
+        outs = []
+        if input_nodes is None:
+            iterator = zip([outer_g], [0])
+            x = outer_x
+        else:
+            iterator = zip(outer_g, input_nodes)
 
-            out = torch.stack(out).mean(0)
+        for g, nids in iterator:
+            if input_nodes is not None:
+                x = outer_x[nids]
 
-            return out
+            with g.local_scope():
+                g.ndata['h'] = x
+                out = [dgl.readout_nodes(g, 'h', op=self.op)]
+                for l in range(self.num_layers):
+                    g.update_all(self.message('h', 'h',  'type', 'm', l), fn.sum('m', 'h'))
+                    out.append(dgl.readout_nodes(g, 'h', op=self.op))
+
+                out = torch.stack(out).mean(0)
+
+                outs.append(out)
+
+        return torch.cat(outs)
 
 
 class HEARConv(nn.Module):
@@ -343,8 +357,8 @@ class Model(nn.Module):
 
         return loss
 
-    def review_representation(self, g, x):
-        return self.review_conv(g, x)
+    def review_representation(self, g, x, input_nodes=None):
+        return self.review_conv(g, x, input_nodes=input_nodes)
 
     def review_aggregation(self, g, x, attention=False):
         x = self.review_agg(g, x, attention)
@@ -359,7 +373,7 @@ class Model(nn.Module):
         else:
             return x
 
-    def forward(self, blocks, x):
+    def forward(self, blocks, x, input_nodes):
         blocks, lgcn_blocks = blocks
         if self.preference_module == 'lightgcn':
             lx = self.lightgcn(lgcn_blocks[0].ndata[dgl.NID], lgcn_blocks[:-1])
@@ -378,7 +392,7 @@ class Model(nn.Module):
             lx = g.dstdata['h']['node']
 
         x = self.node_dropout(x)
-        x = self.review_representation(blocks[0], x)
+        x = self.review_representation(blocks[0], x, input_nodes)
 
         x = self.review_aggregation(blocks[1], x)
 
