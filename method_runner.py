@@ -34,8 +34,8 @@ lightrla2_hyperparameters = {
 
 lightrla_hyperparameters = {
     'review_aggregator': ['narre'],
-    'preference_module': ['narre', 'lightgcn'],
-    'predictor': ['dot', 'narre', 'bi-interaction'],
+    'preference_module': ['mr', 'lightgcn'],
+    'predictor': ['dot', 'narre'],
     'weight_decay': [1e-6, 1e-5, 1e-4],
     'learning_rate': [0.0001, 0.001, 0.01],
     'dropout': np.linspace(0., 0.6, 7).round(1).tolist(),
