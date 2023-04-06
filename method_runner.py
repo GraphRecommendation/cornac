@@ -64,7 +64,16 @@ bpr_hyperparameters = {
     'max_iter': [shared_hyperparameters['num_epochs']]
 }
 
-trirank_hyperparameters = {
+trirank_hyperparameters_1 = {
+    'alpha': [0., 0.5, 1.],
+    'beta': [0.],
+    'gamma': [0.],
+    'mu_U': [0., 0.5, 1.],
+    'mu_P': [0., 0.5, 1.],
+    'mu_A': [0.]
+}
+
+trirank_hyperparameters_2 = {
     'alpha': [0., 0.5, 1.],
     'beta': [0., 0.5, 1.],
     'gamma': [0., 0.5, 1.],
@@ -123,12 +132,20 @@ def run(dataset, method):
             method = method.replace('-bpr', '')
             parameters['use_bpr'] = [True]
 
-    elif method == 'trirank':
-        parameters = trirank_hyperparameters
+    elif method == 'trirank-1':
+        parameters = trirank_hyperparameters_1
+        method = 'trirank'
+    elif method == 'trirank-2':
+        parameters = trirank_hyperparameters_2
+        method = 'trirank'
     else:
         raise NotImplementedError
 
     values = [parameters[k] for k in sorted(parameters)]  # ensure order of parameters
+
+    if method == 'trirank':
+        c1 = list(itertools.product(*([[values[0][1]]]*3 + values[3:])))
+        c2 = list(itertools.product(*([[values[0][1]]]*3 + values[3:])))
     combinations = list(itertools.product(*values))
 
     print(f'Going through a total of {len(combinations)} parameter combinations.')

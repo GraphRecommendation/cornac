@@ -253,10 +253,11 @@ def run(in_kwargs, dataset, method, save_dir='.'):
         path = os.path.join(save_dir, model.name, 'results.csv')
         if os.path.isfile(path):
             df = pd.read_csv(path)
-            columns = [c for c in df.columns if c in default_kwargs]
-            values = [default_kwargs.get(c) for c in columns]
+            columns = [c for c in df.columns if c in in_kwargs]
+            values = [in_kwargs.get(c) for c in columns]
             df = df[columns]  # ensure ordering and ignore e.g. score
             if (df == values).all(1).any():
+                print(f'Skipped {method} for {dataset}')
                 return 0
 
     cornac.Experiment(
