@@ -99,7 +99,7 @@ def process_runner(dataset, method, parameters, gpu):
 
 
 def create_hyperparameter_dict(comb, model_parameters, shared_parameters):
-    params = {}
+    params = {'skip_tried': config.get('skip_tried', False)}
     params.update(shared_parameters)
     params.update({k: v for k, v in zip(sorted(model_parameters), comb)})
     return params

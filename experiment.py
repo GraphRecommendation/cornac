@@ -13,10 +13,12 @@
 # limitations under the License.
 # ============================================================================
 import inspect
+import os
 import pickle
 
 from copy import deepcopy
 
+import pandas as pd
 import torch
 
 from cornac.datasets import amazon_cellphone_seer, amazon_computer_seer
@@ -29,6 +31,7 @@ import sys
 
 def run(in_kwargs, dataset, method, save_dir='.'):
     user_based = in_kwargs.pop('user_based', True)
+    skip_tried = in_kwargs.pop('skip_tried', False)
     objective = in_kwargs['objective'] = in_kwargs.get('objective', 'ranking')  # Ranking is default
 
     if method in ['hear', 'testrec', 'lightrla']:
@@ -245,6 +248,16 @@ def run(in_kwargs, dataset, method, save_dir='.'):
 
     dk = deepcopy(default_kwargs)
     dk['id'] = in_kwargs.get('index', 0)
+
+    if skip_tried:
+        path = os.path.join(save_dir, model.name, 'results.csv')
+        if os.path.isfile(path):
+            df = pd.read_csv(path)
+            columns = [c for c in df.columns if c in default_kwargs]
+            values = [default_kwargs.get(c) for c in columns]
+            df = df[columns]  # ensure ordering and ignore e.g. score
+            if (df == values).all(1).any():
+                return 0
 
     cornac.Experiment(
         eval_method=eval_method, models=[model], metrics=metrics,

@@ -153,6 +153,7 @@ class Experiment:
                 parameters['epoch'] = model.best_epoch
                 parameters['file'] = mf.rsplit('/')[-1]
                 df = pd.DataFrame({k: [v] for k, v in parameters.items()})
+                # df = df.sort_index(axis=1)  # todo include at a later point
                 df.to_csv(results_path, header=header, mode='a', index=False)
 
         output = ""
