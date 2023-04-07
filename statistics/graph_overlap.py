@@ -6,8 +6,9 @@ from collections import OrderedDict, defaultdict
 import numpy as np
 import pandas as pd
 
+from cornac.utils.graph_construction import generate_mappings
 from statistics import utils
-from statistics.utils import generate_mappings, id_mapping
+from statistics.utils import id_mapping
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--datasets', nargs='+')

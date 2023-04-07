@@ -73,12 +73,12 @@ trirank_hyperparameters_1 = {
     'mu_A': [0.]
 }
 
-trirank_hyperparameters_2 = {
-    'alpha': [0., 0.5, 1.],
+trirank_hyperparameters_cell = {
+    'alpha': [1.],
     'beta': [0., 0.5, 1.],
     'gamma': [0., 0.5, 1.],
-    'mu_U': [0., 0.5, 1.],
-    'mu_P': [0., 0.5, 1.],
+    'mu_U': [0.],
+    'mu_P': [0.5],
     'mu_A': [0., 0.5, 1.]
 }
 
@@ -97,12 +97,12 @@ BASE_STR = config['BASE']
 def process_runner(dataset, method, parameters, gpu):
     str_arg = ' '.join([BASE_STR, f"CUDA_VISIBLE_DEVICES={gpu} python experiment.py {dataset} {method}",
                         str(parameters)]).replace("'", "\\'")
-    p = subprocess.Popen(str_arg, stdout=subprocess.PIPE, shell=True, executable='/bin/bash')
-    for line in p.stdout:
-        print(line)
-
-    p.wait()
-    returncode = p.returncode
+    returncode = subprocess.run(str_arg, shell=True, executable='/bin/bash').returncode
+    # for line in p.stdout:
+    #     print(line)
+    #
+    # p.wait()
+    # returncode = p.returncode
 
     return gpu, returncode, parameters
 
@@ -135,17 +135,16 @@ def run(dataset, method):
     elif method == 'trirank-1':
         parameters = trirank_hyperparameters_1
         method = 'trirank'
-    elif method == 'trirank-2':
-        parameters = trirank_hyperparameters_2
+    elif method == 'trirank':
+        if dataset == 'cellphone':
+            parameters = trirank_hyperparameters_cell
+        else:
+            NotImplementedError
         method = 'trirank'
     else:
         raise NotImplementedError
 
     values = [parameters[k] for k in sorted(parameters)]  # ensure order of parameters
-
-    if method == 'trirank':
-        c1 = list(itertools.product(*([[values[0][1]]]*3 + values[3:])))
-        c2 = list(itertools.product(*([[values[0][1]]]*3 + values[3:])))
     combinations = list(itertools.product(*values))
 
     print(f'Going through a total of {len(combinations)} parameter combinations.')

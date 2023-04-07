@@ -5,6 +5,7 @@
 numpy==1.19.*
 matplotlib==3.6.1
 tensorflow==2.6.0
+keras==2.6.0
 protobuf==3.20
 pandas==1.4.*
 scipy==1.9.3
