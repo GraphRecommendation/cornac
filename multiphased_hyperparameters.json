@@ -1,0 +1,264 @@
+{
+  "shared": {
+    "batch_size": 256,
+    "num_epochs": 500,
+    "early_stopping": 25,
+    "num_workers": 2,
+    "model_selection": "best",
+    "user_based": true,
+    "verbose": false,
+    "predictor": "narre"
+  },
+  "lightrla": {
+    "phases": [
+      {
+        "tune": {
+          "weight_decay": [
+            1e-6,
+            1e-5,
+            1e-4
+          ],
+          "learning_rate": [
+            0.0001,
+            0.001,
+            0.01
+          ],
+          "dropout": [
+            0.0,
+            0.1,
+            0.2,
+            0.3,
+            0.4,
+            0.5,
+            0.6
+          ]
+        },
+        "fixed": {
+          "review_aggregator": "narre",
+          "preference_module": "lightgcn",
+          "combiner": "concat",
+          "predictor": "dot"
+        }
+      },
+      {
+        "tune": {
+          "review_aggregator": [
+            "narre",
+            "narre-rel"
+          ],
+          "preference_module": [
+            "mf",
+            "lightgcn"
+          ],
+          "combiner": [
+            "add",
+            "mul",
+            "bi-interaction",
+            "concat"
+          ],
+          "graph_type": [
+            "ao", "ao-one"
+          ],
+          "predictor": [
+            "narre", "dot"
+          ]
+        },
+        "optimal": {
+          "weight_decay": 1e-5,
+          "learning_rate": 0.0001,
+          "dropout": 0.2,
+          "l2_weight": 0,
+          "num_neg_samples": 50
+        }
+      },
+      {
+        "tune": {
+          "node_dim": [
+            32,
+            64,
+            128
+          ]
+        },
+        "optimal": {
+          "review_aggregator": "narre",
+          "preference_module": "lightgcn",
+          "combiner": "concat",
+          "weight_decay": 1e-5,
+          "learning_rate": 0.0001,
+          "dropout": 0.2,
+          "l2_weight": 0,
+          "num_neg_samples": 50
+        }
+      }
+    ],
+    "default": {
+      "l2_weight": 0,
+      "num_neg_samples": 50,
+      "fanout": 10
+    }
+  },
+  "kgat": {
+    "phases": [
+      {
+        "tune": {
+          "l2_weight": [
+            1e-6,
+            1e-5,
+            1e-4
+          ],
+          "learning_rate": [
+            0.00001,
+            0.0001,
+            0.001
+          ],
+          "dropout": [
+            0.0,
+            0.1,
+            0.2,
+            0.3,
+            0.4,
+            0.5,
+            0.6
+          ]
+        }
+      }
+    ]
+  },
+  "narre": {
+    "phases": [
+      {
+        "tune": {
+          "learning_rate": [
+            0.00001,
+            0.0001,
+            0.001
+          ],
+          "dropout_rate": [
+            0.0,
+            0.1,
+            0.2,
+            0.3,
+            0.4,
+            0.5,
+            0.6
+          ]
+        },
+        "fixed": {
+          "dim": 64
+        }
+      },
+      {
+        "optimal": {
+          "weight_decay": 1e-5,
+          "learning_rate": 0.0001,
+          "dropout": 0.2,
+          "l2_weight": 0
+        },
+        "tune": {
+          "dim": [
+            32,
+            64,
+            128
+          ]
+        }
+      }
+    ],
+    "default": {
+      "max_iter": 500
+    }
+  },
+  "bpr": {
+    "phases": [
+      {
+        "fixed": {
+          "k": 64
+        },
+        "tune": {
+          "learning_rate": [
+            0.00001,
+            0.0001,
+            0.001
+          ],
+          "lambda_reg": [
+            1e-6,
+            1e-5,
+            1e-4
+          ],
+          "use_bias": [
+            true,
+            false
+          ]
+        }
+      },
+      {
+        "optimal": {
+          "learning_rate": 0.0001,
+          "lambda_reg": 1e-5,
+          "use_bias": true
+        },
+        "tune": {
+          "k": [
+            32,
+            64,
+            128
+          ]
+        }
+      }
+    ],
+    "default": {
+      "max_iter": 500
+    }
+  },
+  "trirank": {
+    "phases": [
+      {
+        "tune": {
+          "alpha": [
+            0.0,
+            0.5,
+            1.0
+          ],
+          "mu_U": [
+            0.0,
+            0.5,
+            1.0
+          ],
+          "mu_P": [
+            0.0,
+            0.5,
+            1.0
+          ]
+        },
+        "fixed": {
+          "beta": 0.0,
+          "gamma": 0.0,
+          "mu_A": 0.0
+        }
+      },
+      {
+        "optimal": {
+          "alpha": 0.5,
+          "mu_U": 0.5,
+          "mu_P": 0.5
+        },
+        "tune": {
+          "beta": [
+            0.0,
+            0.5,
+            1.0
+          ],
+          "gamma": [
+            0.0,
+            0.5,
+            1.0
+          ],
+          "mu_A": [
+            0.0,
+            0.5,
+            1.0
+          ]
+        }
+      }
+    ]
+  }
+}
