@@ -35,7 +35,7 @@ class LightRLA(Recommender):
                  model_selection='best',
                  objective='ranking',
                  review_aggregator='narre',
-                 predictor='gatv2',
+                 predictor='narre',
                  preference_module='lightgcn',
                  combiner='add',
                  graph_type='ao',

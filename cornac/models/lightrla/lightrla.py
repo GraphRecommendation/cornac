@@ -402,7 +402,7 @@ class Model(nn.Module):
             x = torch.cat([x, lx], dim=-1)
         elif self.combiner == 'add':
             x = x + lx
-        elif self.predictor == 'bi-interaction':
+        elif self.combiner == 'bi-interaction':
             a = self.add_mlp(x + lx)
             m = self.mul_mlp(x * lx)
             x = a + m
@@ -485,7 +485,7 @@ class Model(nn.Module):
         elif self.combiner == 'add':
             u_emb += lu_emb
             i_emb += li_emb
-        elif self.predictor == 'bi-interaction':
+        elif self.combiner == 'bi-interaction':
             a = self.add_mlp(u_emb + lu_emb)
             m = self.mul_mlp(u_emb * lu_emb)
             u_emb = a + m
