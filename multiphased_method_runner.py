@@ -18,7 +18,9 @@ else:
 GPUS = [g for _ in range(config['GPU_MULT']) for g in GPUS]  # Multiplier for multiple processes per GPU.
 BASE_STR = config['BASE']
 
-name_dict = {'lightrla': 'LightRLA', 'narre': 'NARRE', 'hrdr': 'HRDR', 'kgat': 'KGAT'}
+name_dict = {'lightrla': 'LightRLA', 'narre': 'NARRE', 'hrdr': 'HRDR', 'kgat': 'KGAT', 'bpr': 'BPR',
+             'trirank': 'TriRank', 'narre-bpr': 'NARRE_BPR', 'hrdr-bpr': 'HRDR_BPR', 'ngcf': 'ngcf',
+             'lightgcn': 'lightgcn'}
 
 
 def process_runner(dataset, method, parameters, gpu):
@@ -51,13 +53,19 @@ def run(dataset, method, path='results'):
     methods_hyperparameters = json.load(open('multiphased_hyperparameters.json'))
     shared_hyperparameters = methods_hyperparameters['shared']
 
-    if method.startswith('narre') or method.startswith('hrdr'):
-        raise NotImplementedError
+    # Uses same hyperparameters
+    if bpr_flag := (method.startswith('narre') or method.startswith('hrdr')):
+        method = method.replace('-bpr', '')
+        method_name = 'narre'
     else:
         method_name = method
     method_dict = methods_hyperparameters[method_name]
 
     default_parameters = method_dict.get('default', {})
+
+    if bpr_flag:
+        default_parameters['use_bpr'] = True
+
     for phase_parameters in method_dict['phases']:
         parameters = phase_parameters['tune']
         fixed_parameters = phase_parameters.get('fixed', {})

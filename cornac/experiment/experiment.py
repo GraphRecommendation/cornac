@@ -152,8 +152,13 @@ class Experiment:
                 parameters['score'] = val_result.metric_avg_results[metric]
                 parameters['epoch'] = model.best_epoch
                 parameters['file'] = mf.rsplit('/')[-1]
-                df = pd.DataFrame({k: [v] for k, v in parameters.items()})
-                # df = df.sort_index(axis=1)  # todo include at a later point
+
+                # ensure order
+                if not header:
+                    columns = pd.read_csv(results_path, nrows=1).columns
+                else:
+                    columns = list(parameters)
+                df = pd.DataFrame({k: [parameters[k]] for k in columns})
                 df.to_csv(results_path, header=header, mode='a', index=False)
 
         output = ""
