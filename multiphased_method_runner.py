@@ -57,6 +57,8 @@ def run(dataset, method, path='results'):
     if bpr_flag := (method.startswith('narre') or method.startswith('hrdr')):
         method = method.replace('-bpr', '')
         method_name = 'narre'
+    elif method in ['lightgcn', 'ngcf']:
+        method_name = 'kgat'
     else:
         method_name = method
     method_dict = methods_hyperparameters[method_name]
