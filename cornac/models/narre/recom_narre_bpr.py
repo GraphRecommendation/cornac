@@ -190,7 +190,7 @@ class NARRE_BPR(Recommender):
         train_loss = keras.metrics.Mean(name="loss")
         val_loss = 0.
         best_val_loss = 1e9
-        self.best_epoch = None
+        self.best_epoch = 0
         loop = trange(self.max_iter, disable=not self.verbose, bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}')
         stopping_flag = False
         for i_epoch, _ in enumerate(loop):
