@@ -76,7 +76,11 @@ def run(dataset, method, path='results'):
 
         # if using optimal parameters find optimal and assign.
         if len(optimal_parameters) > 0:
-            save_dir = os.path.join(path, dataset, method, name_dict[method], 'results.csv')
+            method_name = method
+            if default_parameters.get('use_bpr', False):
+                method_name += '-bpr'
+
+            save_dir = os.path.join(path, dataset, method, name_dict[method_name], 'results.csv')
             if os.path.isfile(save_dir):
                 df = pd.read_csv(save_dir)
                 best_df = df[df.score == df.score.max()]
