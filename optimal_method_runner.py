@@ -47,7 +47,7 @@ def create_hyperparameter_dict(comb, model_parameters, shared_parameters, defaul
     return params
 
 
-def run(dataset, methods, tune_dataset, path='results'):
+def run(datasets, methods, tune_dataset, path='results'):
     global GPUS
 
     methods_hyperparameters = json.load(open('multiphased_hyperparameters.json'))
@@ -91,7 +91,8 @@ def run(dataset, methods, tune_dataset, path='results'):
         method_optimal_parameters[method.replace('-bpr', '')] = optimal_parameters
 
     combinations = list(method_optimal_parameters.items())
-    print(f'Going through a total of {len(combinations)} parameter combinations.')
+    combinations = [(d, m, p) for d in datasets for m, p in combinations]
+    print(f'Going through a total of {len(combinations)} combinations.')
 
     failed = []
     futures = []
@@ -103,7 +104,7 @@ def run(dataset, methods, tune_dataset, path='results'):
             if first:
                 # start process on each gpu. Zip ensures we do not iterate more than num gpus or combinations.
                 for _, gpu in list(zip(combinations, GPUS)):
-                    method, params = combinations.pop(0)
+                    dataset, method, params = combinations.pop(0)
                     params.update({'index': index})
                     futures.append(e.submit(process_runner, dataset, method, params, gpu))
                 first = False
@@ -118,7 +119,7 @@ def run(dataset, methods, tune_dataset, path='results'):
                     if returncode != 0:
                         failed.append(pm)
 
-                    method, params = combinations.pop(0)
+                    dataset, method, params = combinations.pop(0)
                     params.update({'index': index})
                     futures.append(e.submit(process_runner, dataset, method, params, gpu))
                 else:
@@ -138,6 +139,4 @@ def run(dataset, methods, tune_dataset, path='results'):
 if __name__ == '__main__':
     datasets = config['DATASETS'] if 'DATASETS' in config else [config['DATASET']]
     methods = config['METHODS'] if 'METHODS' in config else [config['METHOD']]
-    for dataset in datasets:
-        print('----', dataset, '----')
-        run(dataset, methods, 'cellphone')
+    run(datasets, methods, 'cellphone')
