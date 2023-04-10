@@ -68,6 +68,7 @@ def run(dataset, method, path='results'):
     if bpr_flag:
         default_parameters['use_bpr'] = True
 
+    failed = []
     for phase_parameters in method_dict['phases']:
         parameters = phase_parameters['tune']
         fixed_parameters = phase_parameters.get('fixed', {})
@@ -94,7 +95,6 @@ def run(dataset, method, path='results'):
         futures = []
         first = True
         index = 0
-        failed = []
         with ThreadPoolExecutor(max_workers=len(GPUS)) as e, open(f'{dataset}_{method}_parameters.pkl', 'wb') as f:
             while combinations:
                 # should only be false on first iteration
@@ -131,9 +131,9 @@ def run(dataset, method, path='results'):
             if returncode != 0:
                 failed.append(parameters)
 
-        if len(failed):
-            with open(f'failed_experiments_{dataset}_{method}.pickle', 'wb') as f:
-                pickle.dump(failed, f)
+    if len(failed):
+        with open(f'failed_experiments_{dataset}_{method}.pickle', 'wb') as f:
+            pickle.dump(failed, f)
 
 
 if __name__ == '__main__':
