@@ -220,7 +220,7 @@ class NARRE_BPR(Recommender):
                     test_set=self.val_set,
                 )
                 val_loss = current_val_auc
-                if best_val_loss > val_loss:
+                if best_val_loss < val_loss:
                     best_val_loss = val_loss
                     self.best_epoch = i_epoch + 1
                     best_weights = current_weights
