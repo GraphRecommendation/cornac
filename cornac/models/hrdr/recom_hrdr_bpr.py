@@ -35,6 +35,7 @@ class HRDR_BPR(Recommender):
         max_num_review=None,
         batch_size=64,
         max_iter=10,
+        early_stopping=5,
         optimizer='adam',
         learning_rate=0.001,
         model_selection='last', # last or best
@@ -57,6 +58,7 @@ class HRDR_BPR(Recommender):
         self.max_num_review = max_num_review
         self.batch_size = batch_size
         self.max_iter = max_iter
+        self.early_stopping = early_stopping
         self.optimizer = optimizer
         self.learning_rate = learning_rate
         self.model_selection = model_selection
@@ -123,6 +125,7 @@ class HRDR_BPR(Recommender):
         best_val_loss = float('inf')
         self.best_epoch = None
         loop = trange(self.max_iter, disable=not self.verbose, bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}')
+        stopping_flag = False
         for i_epoch, _ in enumerate(loop):
             train_loss.reset_states()
             for i, (batch_users, batch_i_items, batch_j_items) in enumerate(self.train_set.uij_iter(self.batch_size, shuffle=True, neg_sampling="popularity")):
@@ -159,8 +162,12 @@ class HRDR_BPR(Recommender):
                     self.best_epoch = i_epoch + 1
                     best_weights = current_weights
                 loop.set_postfix(loss=train_loss.result().numpy(), val_loss=val_loss, best_val_loss=best_val_loss, best_epoch=self.best_epoch)
+
+                stopping_flag = 0 <= self.early_stopping <= self.best_epoch - (i_epoch + 1)
             self.losses["train_losses"].append(train_loss.result().numpy())
             self.losses["val_losses"].append(val_loss)
+            if stopping_flag:
+                break
         loop.close()
 
         # save weights for predictions
