@@ -88,6 +88,8 @@ def run(datasets, methods, tune_dataset, path='results'):
         else:
             raise ValueError(f'Could not find results for', method, 'at the path: ', save_dir)
 
+        optimal_parameters['skip_tried'] = config.get('skip_tried', False)
+
         method_optimal_parameters[method.replace('-bpr', '')] = optimal_parameters
 
     combinations = list(method_optimal_parameters.items())
