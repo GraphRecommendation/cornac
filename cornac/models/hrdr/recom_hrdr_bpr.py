@@ -163,7 +163,7 @@ class HRDR_BPR(Recommender):
                     best_weights = current_weights
                 loop.set_postfix(loss=train_loss.result().numpy(), val_loss=val_loss, best_val_loss=best_val_loss, best_epoch=self.best_epoch)
 
-                stopping_flag = 0 <= self.early_stopping <= self.best_epoch - (i_epoch + 1)
+                stopping_flag = 0 <= self.early_stopping <= (i_epoch + 1) - self.best_epoch
             self.losses["train_losses"].append(train_loss.result().numpy())
             self.losses["val_losses"].append(val_loss)
             if stopping_flag:
