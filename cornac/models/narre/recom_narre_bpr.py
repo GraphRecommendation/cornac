@@ -189,10 +189,11 @@ class NARRE_BPR(Recommender):
                 self.optimizer_ = keras.optimizers.Adam(learning_rate=self.learning_rate)
         train_loss = keras.metrics.Mean(name="loss")
         val_loss = 0.
-        best_val_loss = 1e9
+        best_val_loss = 0
         self.best_epoch = 0
         loop = trange(self.max_iter, disable=not self.verbose, bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}')
         stopping_flag = False
+        best_weights = self.model.get_weights(self.train_set, self.batch_size, max_num_review=self.max_num_review)
         for i_epoch, _ in enumerate(loop):
             train_loss.reset_states()
             for i, (batch_users, batch_i_items, batch_j_items) in enumerate(self.train_set.uij_iter(self.batch_size, shuffle=True, neg_sampling="popularity")):
