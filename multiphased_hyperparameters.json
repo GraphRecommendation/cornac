@@ -102,7 +102,7 @@
       {
         "tune": {
           "learn_method": ["non-linear", "transr"],
-          "learn_weight": [0.0, 0.1, 0.5, 0.9, 1.0, 2.0],
+          "learn_weight": [0.1, 0.5, 0.9, 1.0, 2.0],
           "learn_pop_sampling": [true, false]
         },
         "fixed": {

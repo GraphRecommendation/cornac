@@ -331,7 +331,7 @@ class Model(nn.Module):
         self.combiner = combiner
         assert combiner in ['add', 'mul', 'bi-interaction', 'concat']
         if combiner == 'concat':
-            node_dim *= 2
+            final_dim *= 2
         elif combiner == 'bi-interaction':
             self.add_mlp = nn.Sequential(
                 nn.Linear(node_dim, node_dim),
