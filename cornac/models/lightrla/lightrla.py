@@ -12,39 +12,62 @@ from cornac.models.hear.dgl_utils import HearReviewDataset, HearReviewSampler, H
 
 
 class AOSPredictionLayer(nn.Module):
-    def __init__(self, in_dim1, in_dim2, hidden_dims, n_relations):
+    def __init__(self, aos_predictor, in_dim1, in_dim2, hidden_dims, n_relations):
         super().__init__()
-        dims = [in_dim1] + hidden_dims
+        dims = [in_dim1*2] + hidden_dims
         max_i = len(dims)
-        self.mlp_ao = nn.ModuleList(nn.Sequential(
-            *[nn.Sequential(nn.Linear(dims[i], dims[i+1]), nn.LeakyReLU()) for i in range(max_i - 1)]
-        ) for _ in range(n_relations))
-        dims = [in_dim2] + hidden_dims
-        self.mlp_ui = nn.Sequential(
-            *[nn.Sequential(nn.Linear(dims[i], dims[i+1]), nn.LeakyReLU()) for i in range(max_i - 1)]
-        )
+        if aos_predictor == 'non-linear':
+            self.mlp_ao = nn.ModuleList(nn.Sequential(
+                *[nn.Sequential(nn.Linear(dims[i], dims[i+1]), nn.LeakyReLU()) for i in range(max_i - 1)]
+            ) for _ in range(n_relations))
+            dims = [in_dim2*2] + hidden_dims
+            self.mlp_ui = nn.Sequential(
+                *[nn.Sequential(nn.Linear(dims[i], dims[i+1]), nn.LeakyReLU()) for i in range(max_i - 1)]
+            )
+        elif aos_predictor == 'transr':
+            r_dim = hidden_dims[-1]
+            self.w_aor = nn.Parameter(torch.zeros((n_relations, in_dim1*2, r_dim)))
+            self.w_uir = nn.Parameter(torch.zeros((n_relations, in_dim2*2, r_dim)))
+            self.r = nn.Parameter(torch.zeros((n_relations, r_dim)))
+            nn.init.xavier_normal_(self.w_aor); nn.init.xavier_normal_(self.w_uir); nn.init.xavier_normal_(self.r)
+        else:
+            raise NotImplementedError
+        self._aos_predictor = aos_predictor
         self._n_relations = n_relations
         self._out_dim = hidden_dims[-1]
 
     def forward(self, u_emb, i_emb, a_emb, o_emb, s):
-        ui_emb = self.mlp_ui(torch.cat([u_emb, i_emb], dim=-1))
-        ao_emb = torch.cat([a_emb, o_emb], dim=-1)
+        ui_in = torch.cat([u_emb, i_emb], dim=-1)
+        ao_in = torch.cat([a_emb, o_emb], dim=-1)
 
-        if len(ao_emb.size()) == 3:
-            b, n, d = ao_emb.size()
+        if len(ao_in.size()) == 3:
+            b, n, d = ao_in.size()
         else:
-            b, d = ao_emb.size()
+            b, d = ao_in.size()
             n = 1
 
         s = s.reshape(b, n)
-        ao_emb = ao_emb.reshape(b, n, d)
+        ao_in = ao_in.reshape(b, n, d)
 
-        aos_emb = torch.empty((len(s), n, self._out_dim), device=ui_emb.device)
-        for r in range(self._n_relations):
-            mask = s == r
-            aos_emb[mask] = self.mlp_ao[r](ao_emb[mask])
+        if self._aos_predictor == 'non-linear':
+            ui_emb = self.mlp_ui(ui_in)
+            aos_emb = torch.empty((len(s), n, self._out_dim), device=ui_emb.device)
+            for r in range(self._n_relations):
+                mask = s == r
+                aos_emb[mask] = self.mlp_ao[r](ao_in[mask])
 
-        return (ui_emb.unsqueeze(1) * aos_emb).sum(-1)
+            pred = (ui_emb.unsqueeze(1) * aos_emb).sum(-1)
+        elif self._aos_predictor == 'transr':
+            ui_emb = torch.empty((b, n, self._out_dim), device=u_emb.device)
+            aos_emb = torch.empty((b, n, self._out_dim), device=u_emb.device)
+            for r in range(self._n_relations):
+                mask = s == r
+                ui_emb[mask] = torch.repeat_interleave(ui_in, mask.sum(-1), dim=0) @ self.w_uir[r] + self.r[r]
+                aos_emb[mask] = ao_in[mask] @ self.w_aor[r]
+
+            pred = (ui_emb * aos_emb).sum(-1)
+
+        return pred
 
 
 class HypergraphLayer(nn.Module):
@@ -279,7 +302,7 @@ class Model(nn.Module):
 
     def __init__(self, g, n_nodes, n_hyper_graph_types, n_lgcn_relations, aggregator, predictor, node_dim,
                  num_heads, layer_dropout, attention_dropout, preference_module='lightgcn', use_cuda=True,
-                 combiner='add'):
+                 combiner='add', aos_predictor='non-linear'):
         super().__init__()
 
         self.aggregator = aggregator
@@ -323,8 +346,7 @@ class Model(nn.Module):
             self.edge_predictor = dgl.nn.EdgePredictor('ele', node_dim, 1, bias=True)
             self.bias = nn.Parameter(torch.zeros((n_nodes, 1)))
 
-
-        self.aos_predictor = AOSPredictionLayer(2*node_dim, 2*final_dim, [node_dim, 64, 32], 2)
+        self.aos_predictor = AOSPredictionLayer(aos_predictor, node_dim, final_dim, [node_dim, 64, 32], 2)
         self.rating_loss_fn = nn.MSELoss(reduction='mean')
         self.bpr_loss_fn = nn.Softplus()
         self.review_embs = None

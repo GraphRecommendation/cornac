@@ -49,6 +49,9 @@ class LightRLA(Recommender):
                  out_path=None,
                  popularity_biased_sampling=False,
                  learn_explainability=False,
+                 learn_method='transr',
+                 learn_weight=1.,
+                 learn_pop_sampling=False,
                  debug=False
                  ):
         from torch.utils.tensorboard import SummaryWriter
@@ -88,11 +91,15 @@ class LightRLA(Recommender):
         self.attention_dropout = attention_dropout
         self.stemming = stemming
         self.learn_explainability = learn_explainability
+        self.learn_method = learn_method
+        self.learn_weight = learn_weight
+        self.learn_pop_sampling = learn_pop_sampling
         self.popularity_biased_sampling = popularity_biased_sampling
         parameter_list = ['batch_size', 'learning_rate', 'weight_decay', 'node_dim', 'num_heads',
                           'fanout', 'use_relation', 'model_selection', 'review_aggregator', 'objective',
                           'predictor', 'preference_module', 'layer_dropout', 'attention_dropout', 'stemming',
-                          'learn_explainability', 'popularity_biased_sampling', 'combiner']
+                          'learn_explainability', 'learn_method', 'learn_weight', 'learn_pop_sampling',
+                          'popularity_biased_sampling', 'combiner']
         self.parameters = collections.OrderedDict({k: self.__getattribute__(k) for k in parameter_list})
 
         # Method
@@ -441,7 +448,8 @@ class LightRLA(Recommender):
         # create model
         self.model = Model(self.ui_graph, n_nodes, self.n_relations, n_r_types, self.review_aggregator,
                            self.predictor, self.node_dim, self.num_heads, [self.layer_dropout]*2,
-                           self.attention_dropout, self.preference_module, self.use_cuda, combiner=self.combiner)
+                           self.attention_dropout, self.preference_module, self.use_cuda, combiner=self.combiner,
+                           aos_predictor=self.learn_method)
 
         self.model.reset_parameters()
 
@@ -494,7 +502,7 @@ class LightRLA(Recommender):
         # Create sampler
         sampler = dgl_utils.HearBlockSampler(self.node_review_graph, self.review_graphs, self.review_aggregator,
                                              self.sid_aos, self.aos_list, 5,
-                                             self.ui_graph, fanout=self.fanout)
+                                             self.ui_graph, fanout=self.fanout, hard_negatives=self.learn_pop_sampling)
         if self.objective == 'ranking':
             ic = collections.Counter(self.train_set.matrix.nonzero()[1])
             probabilities = torch.FloatTensor([ic.get(i) for i in sorted(ic)]) if self.popularity_biased_sampling \
@@ -561,7 +569,7 @@ class LightRLA(Recommender):
                             aos_loss = aos_loss.mean()
                             cur_losses['aos_loss'] = aos_loss.detach()
                             cur_losses['aos_acc'] = (aos_acc.sum() / aos_acc.shape.numel()).detach()
-                            loss += aos_loss
+                            loss += self.learn_weight * aos_loss
 
                         loss.backward()
 

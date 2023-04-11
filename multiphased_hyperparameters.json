@@ -97,6 +97,60 @@
       "fanout": 10
     }
   },
+  "lightrla-explain": {
+    "phases": [
+      {
+        "tune": {
+          "learn_method": ["non-linear", "transr"],
+          "learn_weight": [0.0, 0.1, 0.5, 0.9, 1.0, 2.0],
+          "learn_pop_sampling": [true, false]
+        },
+        "fixed": {
+          "weight_decay": 0.0001,
+          "learning_rate": 0.01,
+          "dropout": 0.1
+        }
+      },
+      {
+        "tune": {
+          "weight_decay": [
+            1e-6,
+            1e-5,
+            1e-4
+          ],
+          "learning_rate": [
+            0.0001,
+            0.001,
+            0.01
+          ],
+          "dropout": [
+            0.0,
+            0.1,
+            0.2,
+            0.3,
+            0.4,
+            0.5,
+            0.6
+          ]
+        },
+        "optimal": {
+          "learn_method": "transr",
+          "learn_weight": 1.0,
+          "learn_pop_sampling": false
+        }
+      }
+    ],
+    "default": {
+      "l2_weight": 0,
+      "num_neg_samples": 50,
+      "fanout": 10,
+      "review_aggregator": "narre",
+      "preference_module": "lightgcn",
+      "combiner": "concat",
+      "predictor": "dot",
+      "name": "lightrla-explain"
+    }
+  },
   "kgat": {
     "phases": [
       {

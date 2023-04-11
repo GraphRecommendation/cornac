@@ -74,6 +74,9 @@ def run(dataset, method, path='results'):
         fixed_parameters = phase_parameters.get('fixed', {})
         optimal_parameters = phase_parameters.get('optimal', {})
 
+        if method == 'lightrla-explain':
+            method = 'lightrla'
+
         # if using optimal parameters find optimal and assign.
         if len(optimal_parameters) > 0:
             method_name = method
