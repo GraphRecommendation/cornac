@@ -141,6 +141,7 @@
       }
     ],
     "default": {
+      "learn_explainability": true,
       "l2_weight": 0,
       "num_neg_samples": 50,
       "fanout": 10,
