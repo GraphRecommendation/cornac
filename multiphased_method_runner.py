@@ -54,7 +54,7 @@ def run(dataset, method, path='results'):
     shared_hyperparameters = methods_hyperparameters['shared']
 
     # Uses same hyperparameters
-    if bpr_flag := (method.startswith('narre') or method.startswith('hrdr')):
+    if (bpr_flag := method.endswith('-bpr')) and (method.startswith('narre') or method.startswith('hrdr')):
         method = method.replace('-bpr', '')
         method_name = 'narre'
     elif method in ['lightgcn', 'ngcf']:
