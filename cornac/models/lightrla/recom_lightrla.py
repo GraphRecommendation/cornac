@@ -32,6 +32,7 @@ class LightRLA(Recommender):
                  num_heads=3,
                  fanout=5,
                  use_relation=False,
+                 non_linear=True,
                  model_selection='best',
                  objective='ranking',
                  review_aggregator='narre',
@@ -79,6 +80,7 @@ class LightRLA(Recommender):
         self.num_heads = num_heads
         self.fanout = fanout
         self.use_relation = use_relation
+        self.non_linear = non_linear
         self.model_selection = model_selection
         self.objective = objective
         self.review_aggregator = review_aggregator
@@ -164,27 +166,29 @@ class LightRLA(Recommender):
                 edges = []
                 a_o_count = defaultdict(int)
                 aos = sentiment_modality.sentiment[sid]
-                for aid, oid, _ in aos:
+                sids = []
+                for aid, oid, s in aos:
                     if self.stemming:
                         aid = a2a[aid]
                         oid = o2o[oid]
 
                     aid += n_items + n_users
                     oid += n_items + n_users + n_aspects
+                    sent = 0 if s == -1 else 1
 
                     a_o_count[aid] += 1
                     a_o_count[oid] += 1
                     if graph_type == 'ao':
                         n_hyper_edges = 3
                         for f, s, t in [[uid, iid, aid], [uid, iid, oid], [uid, aid, oid], [iid, oid, aid]]:
-                            edges.append([f, s, edge_id])
-                            edges.append([s, t, edge_id])
-                            edges.append([t, f, edge_id])
+                            edges.append([f, s, edge_id, sent])
+                            edges.append([s, t, edge_id, sent])
+                            edges.append([t, f, edge_id, sent])
 
                             if self_loop:
-                                edges.append([f, f, edge_id])
-                                edges.append([s, s, edge_id])
-                                edges.append([t, t, edge_id])
+                                edges.append([f, f, edge_id, sent])
+                                edges.append([s, s, edge_id, sent])
+                                edges.append([t, t, edge_id, sent])
                             edge_id += 1
                     elif graph_type == 'ao-one':
                         n_hyper_edges = 1
@@ -196,14 +200,14 @@ class LightRLA(Recommender):
                             options += self_loops
 
                         for s, d in options:
-                            edges.append([s, d, edge_id])
+                            edges.append([s, d, edge_id, sent])
 
                         edge_id += 1
                     else:
                         raise NotImplementedError
 
                 edges = torch.LongTensor(edges).T
-                src, dst, eids = edges
+                src, dst, eids, sents = edges
                 g = dgl.graph((torch.cat([src, dst]), torch.cat([dst, src])), num_nodes=n_nodes)
 
                 # All hyperedges connect 3 nodes
@@ -222,6 +226,8 @@ class LightRLA(Recommender):
                 g.edata['type'][uids_mask] = 1
                 g.edata['type'][aids_mask] = 2
                 g.edata['type'][oids_mask] = 3
+
+                g.edata['sent'] = sents.repeat(2)
 
                 # a and o also have three hyper edge triples for each occurrence.
                 for nid, c in a_o_count.items():
@@ -449,7 +455,7 @@ class LightRLA(Recommender):
         self.model = Model(self.ui_graph, n_nodes, self.n_relations, n_r_types, self.review_aggregator,
                            self.predictor, self.node_dim, self.num_heads, [self.layer_dropout]*2,
                            self.attention_dropout, self.preference_module, self.use_cuda, combiner=self.combiner,
-                           aos_predictor=self.learn_method)
+                           aos_predictor=self.learn_method, non_linear=self.non_linear)
 
         self.model.reset_parameters()
 

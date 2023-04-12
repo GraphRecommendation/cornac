@@ -78,8 +78,9 @@ class HypergraphLayer(nn.Module):
         self.out_dim = out_dim
         self.non_linear = non_linear
         self.op = op
+        self.linear = nn.Linear(in_dim, out_dim)
         if n_relations > 0:
-            self.relation_w_src = nn.Parameter(torch.zeros((num_layers, n_relations, in_dim, in_dim)))
+            self.relation_w_src = nn.Parameter(torch.zeros((num_layers, 2, n_relations, in_dim, in_dim)))
             self.relation_w_affinity = nn.Parameter(torch.zeros((num_layers, n_relations, in_dim, in_dim)))
         self.activation = nn.LeakyReLU()
 
@@ -88,10 +89,16 @@ class HypergraphLayer(nn.Module):
             norm = edges.src['norm'] * edges.dst['norm'] * edges.data['norm']
             m = edges.src[lhs_field]
             if hasattr(self, 'relation_w_src'):
-                m1 = dgl.ops.gather_mm(m, self.relation_w_src[layer], idx_b=edges.data[edge])
-                m2 = dgl.ops.gather_mm(m * edges.dst[rhs_field], self.relation_w_affinity[layer],
-                                       idx_b=edges.data[edge])
-                m = m1 + m2
+                o = torch.empty_like(m)
+                for sent in range(edges.data['sent'].max() + 1):
+                    mask = edges.data['sent'] == sent
+                    w_src = self.relation_w_src[layer][sent]
+                    o[mask] = dgl.ops.gather_mm(m[mask], w_src, idx_b=edges.data[edge][mask])
+                    # m2 = dgl.ops.gather_mm(m * edges.dst[rhs_field], self.relation_w_affinity[layer],
+                    #                    idx_b=edges.data[edge])
+                m = o
+            elif self.non_linear:
+                m = self.linear(m)
 
             m = m * norm.unsqueeze(-1)
 
@@ -293,16 +300,9 @@ class HEARConv(nn.Module):
 
 
 class Model(nn.Module):
-    def reset_parameters(self):
-        for name, parameter in self.named_parameters():
-            if name.endswith('bias'):
-                nn.init.constant_(parameter, 0)
-            else:
-                nn.init.xavier_normal_(parameter)
-
     def __init__(self, g, n_nodes, n_hyper_graph_types, n_lgcn_relations, aggregator, predictor, node_dim,
                  num_heads, layer_dropout, attention_dropout, preference_module='lightgcn', use_cuda=True,
-                 combiner='add', aos_predictor='non-linear'):
+                 combiner='add', aos_predictor='non-linear', non_linear=False):
         super().__init__()
 
         self.aggregator = aggregator
@@ -314,7 +314,7 @@ class Model(nn.Module):
         self.node_embedding = nn.Embedding(n_nodes, node_dim)
 
         n_layers = 3
-        self.review_conv = HypergraphLayer(node_dim, node_dim, non_linear=False, num_layers=n_layers,
+        self.review_conv = HypergraphLayer(node_dim, node_dim, non_linear=non_linear, num_layers=n_layers,
                                            n_relations=n_hyper_graph_types)
         self.review_agg = HEARConv(aggregator, n_nodes, n_lgcn_relations, node_dim, node_dim, num_heads,
                                    feat_drop=layer_dropout[1], attn_drop=attention_dropout)
@@ -356,6 +356,15 @@ class Model(nn.Module):
         self.review_attention = None
         self.ui_emb = None
         self.aos_emb = None
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        for name, parameter in self.named_parameters():
+            if name.endswith('bias'):
+                nn.init.constant_(parameter, 0)
+            else:
+                nn.init.xavier_normal_(parameter)
 
     def get_initial_embedings(self, nodes):
         if hasattr(self, 'node_embedding'):

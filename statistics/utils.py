@@ -103,11 +103,11 @@ def initialize_dataset(dataset):
 
 
 METHOD_NAMES = {'lightrla': 'LightRLA', 'lightgcn': 'lightgcn', 'light2': 'light2', 'narre': 'NARRE_BPR',
-                'kgat': 'KGAT'}
+                'kgat': 'KGAT', 'bpr': 'BPR'}
 
 
 def initialize_model(path, dataset, method):
-    name = METHOD_NAMES[method]
+    name = METHOD_NAMES.get(method, method)
     dir_path = os.path.join(path, dataset, method, name)
     df = pd.read_csv(os.path.join(dir_path, 'results.csv'), index_col=None)
 

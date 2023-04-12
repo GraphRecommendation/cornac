@@ -304,6 +304,8 @@ class KGAT(Recommender):
             self.summary_writer.add_hparams(self.parameters, dict(zip([m.name for m in metrics], results)))
 
         _ = self._validate(val_set, metrics)
+        self.best_epoch = best_epoch
+        self.best_value = best_score
 
     def _validate(self, val_set, metrics):
         from ...eval_methods.base_method import rating_eval, ranking_eval
