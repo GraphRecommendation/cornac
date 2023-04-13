@@ -8,6 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 
+from statistics.utils import METHOD_NAMES
+
 with open('config.json') as f:
     config = json.load(f)
 
@@ -17,10 +19,6 @@ else:
     GPUS = list(range(config['GPUS']))
 GPUS = [g for _ in range(config['GPU_MULT']) for g in GPUS]  # Multiplier for multiple processes per GPU.
 BASE_STR = config['BASE']
-
-name_dict = {'lightrla': 'LightRLA', 'narre': 'NARRE', 'hrdr': 'HRDR', 'kgat': 'KGAT', 'bpr': 'BPR',
-             'trirank': 'TriRank', 'narre-bpr': 'NARRE_BPR', 'hrdr-bpr': 'HRDR_BPR', 'ngcf': 'ngcf',
-             'lightgcn': 'lightgcn'}
 
 
 def process_runner(dataset, method, parameters, gpu):
@@ -73,11 +71,12 @@ def run(datasets, methods, tune_dataset, path='results'):
         phase_parameters = method_dict['phases'][0]
         parameters = phase_parameters['tune']
         fixed_parameters = phase_parameters.get('fixed', {})
+        opt_parameters = phase_parameters.get('fixed', {})
 
         optimal_parameters = {}
         p_names = set(phase_parameters).union(parameters).union(fixed_parameters).union(default_parameters)\
-            .union(shared_hyperparameters)
-        save_dir = os.path.join(path, tune_dataset, method.replace('-bpr', ''), name_dict[method], 'results.csv')
+            .union(shared_hyperparameters).union(opt_parameters)
+        save_dir = os.path.join(path, tune_dataset, method.replace('-bpr', ''), METHOD_NAMES[method], 'results.csv')
         if os.path.isfile(save_dir):
             df = pd.read_csv(save_dir)
             best_df = df[df.score == df.score.max()]
@@ -85,10 +84,15 @@ def run(datasets, methods, tune_dataset, path='results'):
             for k, v in b_param.items():
                 if k in p_names:
                     optimal_parameters[k] = v
+                elif k == 'layer_dropout' and 'dropout' in p_names:
+                    optimal_parameters['dropout'] = v
         else:
             raise ValueError(f'Could not find results for', method, 'at the path: ', save_dir)
 
         optimal_parameters['skip_tried'] = config.get('skip_tried', False)
+
+        if method in ['lightrla-explain', 'light-e-cyclic']:
+            method = 'lightrla'
 
         method_optimal_parameters[method.replace('-bpr', '')] = optimal_parameters
 
@@ -141,4 +145,4 @@ def run(datasets, methods, tune_dataset, path='results'):
 if __name__ == '__main__':
     datasets = config['DATASETS'] if 'DATASETS' in config else [config['DATASET']]
     methods = config['METHODS'] if 'METHODS' in config else [config['METHOD']]
-    run(datasets, methods, 'cellphone')
+    run(datasets, methods, 'camera')

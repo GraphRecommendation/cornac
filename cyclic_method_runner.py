@@ -68,8 +68,8 @@ def run(dataset, method, path='results'):
     methods_hyperparameters = json.load(open('multiphased_hyperparameters.json'))
     shared_hyperparameters = methods_hyperparameters['shared']
 
-    # Uses same hyperparameters
-    if (bpr_flag := method.endswith('-bpr')) and (method.startswith('narre') or method.startswith('hrdr')):
+    # Uses same hyperparametersna
+    if (bpr_flag := method.endswith('-bpr')) or method.startswith('narre') or method.startswith('hrdr'):
         method = method.replace('-bpr', '')
         method_name = 'narre'
     elif method in ['lightgcn', 'ngcf']:

@@ -220,7 +220,7 @@ def run(in_kwargs, dataset, method, save_dir='.'):
         reviews = amazon_camera_seer.load_review()
         sentiment = amazon_camera_seer.load_sentiment(reader=Reader())
     else:
-        raise NotImplementedError
+        raise NotImplementedError(dataset, 'not valid.')
 
     sentiment_modality = SentimentModality(data=sentiment)
 

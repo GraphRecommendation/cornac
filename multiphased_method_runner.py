@@ -91,6 +91,8 @@ def run(dataset, method, path='results'):
                 for k, v in b_param.items():
                     if k in optimal_parameters:
                         optimal_parameters[k] = v
+                    elif k == 'layer_dropout' and 'dropout' in optimal_parameters:
+                        optimal_parameters['dropout'] = v
             else:
                 print(f'Warning: could not find optimal parameters at {save_dir}, using default.')
 

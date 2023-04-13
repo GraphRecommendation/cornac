@@ -6,21 +6,16 @@ from cornac.experiment import ExperimentResult
 
 from cornac.metrics import *
 
-from cornac.data.text import BaseTokenizer
-
-from cornac.data import Reader, SentimentModality, ReviewModality
-
-from cornac.datasets import amazon_cellphone_seer, amazon_computer_seer
-from cornac.eval_methods import StratifiedSplit
-
 
 def run(path, dataset, methods):
     eval_method = statistics.utils.initialize_dataset(dataset)
 
-    metrics = [NDCG(), NDCG(20), NDCG(100), AUC(), MAP(), MRR(), Recall(), Recall(20), Precision(), Precision(20)]
+    metrics = [NDCG(), NDCG(20), NDCG(100), AUC(), MAP(), MRR(), Recall(10), Recall(20), Precision(10), Precision(20)]
+    # metrics = [NDCG(), NDCG(20), NDCG(1), NDCG(10), NDCG(5), NDCG(50), NDCG(100), AUC(), MAP(), MRR()]
     eval_method._organize_metrics(metrics)
     results = ExperimentResult()
     for method in methods:
+        print(method)
         model = statistics.utils.initialize_model(path, dataset, method)
 
         model.train_set = eval_method.train_set
@@ -33,6 +28,9 @@ def run(path, dataset, methods):
         results.append(test_result)
 
     print(results)
+
+    with open(os.path.join(path, dataset, '_'.join(methods) + "_results.pickle", 'wb')) as f:
+        pickle.dump(results, f)
 
 
 if __name__ == '__main__':

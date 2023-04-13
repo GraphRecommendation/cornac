@@ -9,7 +9,7 @@ from cornac.data.text import BaseTokenizer
 
 from cornac.data import SentimentModality, ReviewModality, Reader
 
-from cornac.datasets import amazon_cellphone_seer, amazon_computer_seer
+from cornac.datasets import amazon_cellphone_seer, amazon_computer_seer, amazon_toy_seer, amazon_camera_seer
 
 
 def id_mapping(eval_method, eid, type):
@@ -74,6 +74,14 @@ def initialize_dataset(dataset):
         feedback = amazon_computer_seer.load_feedback(fmt="UIRT", reader=Reader())
         reviews = amazon_computer_seer.load_review()
         sentiment = amazon_computer_seer.load_sentiment(reader=Reader())
+    elif dataset == 'toy':
+        feedback = amazon_toy_seer.load_feedback(fmt="UIRT", reader=Reader())
+        reviews = amazon_toy_seer.load_review()
+        sentiment = amazon_toy_seer.load_sentiment(reader=Reader())
+    elif dataset == 'camera':
+        feedback = amazon_camera_seer.load_feedback(fmt="UIRT", reader=Reader())
+        reviews = amazon_camera_seer.load_review()
+        sentiment = amazon_camera_seer.load_sentiment(reader=Reader())
     else:
         raise NotImplementedError
 
@@ -102,8 +110,9 @@ def initialize_dataset(dataset):
     return eval_method
 
 
-METHOD_NAMES = {'lightrla': 'LightRLA', 'lightgcn': 'lightgcn', 'light2': 'light2', 'narre': 'NARRE_BPR',
-                'kgat': 'KGAT', 'bpr': 'BPR'}
+METHOD_NAMES = {'lightrla': 'LightRLA', 'narre': 'NARRE', 'hrdr': 'HRDR', 'kgat': 'KGAT', 'bpr': 'BPR',
+             'trirank': 'TriRank', 'narre-bpr': 'NARRE_BPR', 'hrdr-bpr': 'HRDR_BPR', 'ngcf': 'ngcf',
+             'lightgcn': 'lightgcn', 'light-e-cyclic': 'light-e-cyclic'}
 
 
 def initialize_model(path, dataset, method):
