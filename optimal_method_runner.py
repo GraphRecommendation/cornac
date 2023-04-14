@@ -145,4 +145,4 @@ def run(datasets, methods, tune_dataset, path='results'):
 if __name__ == '__main__':
     datasets = config['DATASETS'] if 'DATASETS' in config else [config['DATASET']]
     methods = config['METHODS'] if 'METHODS' in config else [config['METHOD']]
-    run(datasets, methods, 'camera')
+    run(datasets, methods, 'cellphone')
