@@ -90,7 +90,7 @@ def run(datasets, methods, tune_dataset, path='results'):
             raise ValueError(f'Could not find results for', method, 'at the path: ', save_dir)
 
         optimal_parameters['skip_tried'] = config.get('skip_tried', False)
-
+        optimal_parameters.update(shared_hyperparameters)
         if method in ['lightrla-explain', 'light-e-cyclic']:
             method = 'lightrla'
 
