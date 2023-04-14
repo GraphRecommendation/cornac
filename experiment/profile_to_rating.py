@@ -29,3 +29,6 @@ def run(dataset_name):
 
 if __name__ == '__main__':
 	run('cellphone')
+	run('toy')
+	run('camera')
+	run('computer')

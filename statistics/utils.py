@@ -113,11 +113,12 @@ def initialize_dataset(dataset):
 METHOD_NAMES = {'lightrla': 'LightRLA', 'narre': 'NARRE', 'hrdr': 'HRDR', 'kgat': 'KGAT', 'bpr': 'BPR',
              'trirank': 'TriRank', 'narre-bpr': 'NARRE_BPR', 'hrdr-bpr': 'HRDR_BPR', 'ngcf': 'ngcf',
              'lightgcn': 'lightgcn', 'light-e-cyclic': 'light-e-cyclic'}
+METHOD_REMATCH = {'narre-bpr': 'narre', 'hrdr-bpr': 'hrdr'}
 
 
 def initialize_model(path, dataset, method):
     name = METHOD_NAMES.get(method, method)
-    dir_path = os.path.join(path, dataset, method, name)
+    dir_path = os.path.join(path, dataset, METHOD_REMATCH.get(method, method), name)
     df = pd.read_csv(os.path.join(dir_path, 'results.csv'), index_col=None)
 
     best_df = df[df.score == df.score.max()]

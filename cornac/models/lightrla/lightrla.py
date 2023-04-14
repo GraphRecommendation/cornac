@@ -102,9 +102,6 @@ class HypergraphLayer(nn.Module):
 
             m = m * norm.unsqueeze(-1)
 
-            if self.non_linear:
-                m = self.activation(m)
-
             return {out: m}
 
         return func
@@ -126,6 +123,10 @@ class HypergraphLayer(nn.Module):
                 out = [dgl.readout_nodes(g, 'h', op=self.op)]
                 for l in range(self.num_layers):
                     g.update_all(self.message('h', 'h',  'type', 'm', l), fn.sum('m', 'h'))
+
+                    if self.non_linear:
+                        g.dstdata['h'] = self.activation(g.dstdata['h'])
+
                     out.append(dgl.readout_nodes(g, 'h', op=self.op))
 
                 out = torch.stack(out).mean(0)

@@ -29,7 +29,7 @@ def run(path, dataset, methods):
 
     print(results)
 
-    with open(os.path.join(path, dataset, '_'.join(methods) + "_results.pickle", 'wb')) as f:
+    with open(os.path.join(path, dataset, '_'.join(methods) + "_results.pickle"), 'wb') as f:
         pickle.dump(results, f)
 
 
