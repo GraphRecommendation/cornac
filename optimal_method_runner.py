@@ -55,7 +55,7 @@ def run(datasets, methods, tune_dataset, path='results'):
 
     for method in methods:
         # Uses same hyperparameters
-        if (bpr_flag := method.endswith('-bpr')) and (method.startswith('narre') or method.startswith('hrdr')):
+        if (bpr_flag := method.endswith('-bpr')) or (method.startswith('narre') or method.startswith('hrdr')):
             method_name = 'narre'
         elif method in ['lightgcn', 'ngcf']:
             method_name = 'kgat'
