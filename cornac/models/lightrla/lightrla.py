@@ -303,16 +303,28 @@ class HEARConv(nn.Module):
 class Model(nn.Module):
     def __init__(self, g, n_nodes, n_hyper_graph_types, n_lgcn_relations, aggregator, predictor, node_dim,
                  num_heads, layer_dropout, attention_dropout, preference_module='lightgcn', use_cuda=True,
-                 combiner='add', aos_predictor='non-linear', non_linear=False):
+                 combiner='add', aos_predictor='non-linear', non_linear=False, embedding_type='learned',
+                 **kwargs):
         super().__init__()
 
         self.aggregator = aggregator
+        self.embedding_type = embedding_type
         self.predictor = predictor
         self.preference_module = preference_module
         self.node_dim = node_dim
         self.num_heads = num_heads
 
-        self.node_embedding = nn.Embedding(n_nodes, node_dim)
+        if embedding_type == 'learned':
+            self.node_embedding = nn.Embedding(n_nodes, node_dim)
+        elif embedding_type == 'ao_embeddings':
+            self.node_embedding = nn.Embedding(n_nodes, node_dim)
+            self.learned_embeddings = kwargs['ao_embeddings']
+            dims = [self.learned_embeddings.size(-1), 256, 128, self.node_dim]
+            self.node_embedding_mlp = nn.Sequential(
+                *[nn.Sequential(nn.Linear(dims[i], dims[i+1]), nn.Tanh()) for i in range(len(dims)-1)]
+            )
+        else:
+            raise ValueError(f'Invalid embedding type {embedding_type}')
 
         n_layers = 3
         self.review_conv = HypergraphLayer(node_dim, node_dim, non_linear=non_linear, num_layers=n_layers,
@@ -368,10 +380,17 @@ class Model(nn.Module):
                 nn.init.xavier_normal_(parameter)
 
     def get_initial_embedings(self, nodes):
-        if hasattr(self, 'node_embedding'):
+        if self.embedding_type == 'learned':
             return self.node_embedding(nodes)
+        elif self.embedding_type == 'ao_embeddings':
+            filter_val = self.node_embedding.weight.size(0) - self.learned_embeddings.size(0)
+            mask = nodes >= filter_val
+            emb = torch.empty((*nodes.size(), self.node_dim), device=nodes.device)
+            emb[~mask] = self.node_embedding(nodes[~mask])
+            emb[mask] = self.node_embedding_mlp(self.learned_embeddings[nodes[mask]-filter_val])
+            return emb
         else:
-            return self.node_embedding_mlp(self.learned_node_embeddings[nodes])
+            raise ValueError(f'Does not support {self.embedding_type}')
 
     def l2_loss(self, pos, neg, emb):
         if isinstance(emb, list):

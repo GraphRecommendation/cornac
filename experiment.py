@@ -249,7 +249,7 @@ def run(in_kwargs, dataset, method, save_dir='.'):
     import cornac
     from cornac.metrics import NDCG, AUC, MAP, MRR, Recall, Precision
     if objective == 'ranking':
-        metrics = [NDCG(), NDCG(20), NDCG(100), AUC(), MAP(), MRR(), Recall(), Recall(20), Precision(), Precision(20)]
+        metrics = [NDCG(), NDCG(20), NDCG(100), AUC(), MAP(), MRR(), Recall(10), Recall(20), Precision(10), Precision(20)]
     elif objective == 'rating':
         metrics = [cornac.metrics.MSE(), cornac.metrics.RMSE()]
     else:

@@ -53,6 +53,7 @@ class LightRLA(Recommender):
                  learn_method='transr',
                  learn_weight=1.,
                  learn_pop_sampling=False,
+                 embedding_type='ao_embeddings',
                  debug=False
                  ):
         from torch.utils.tensorboard import SummaryWriter
@@ -96,6 +97,7 @@ class LightRLA(Recommender):
         self.learn_method = learn_method
         self.learn_weight = learn_weight
         self.learn_pop_sampling = learn_pop_sampling
+        self.embedding_type = embedding_type
         self.popularity_biased_sampling = popularity_biased_sampling
         parameter_list = ['batch_size', 'learning_rate', 'weight_decay', 'node_dim', 'num_heads',
                           'fanout', 'use_relation', 'model_selection', 'review_aggregator', 'objective',
@@ -436,26 +438,47 @@ class LightRLA(Recommender):
         return torch.tensor(a_embeddings), torch.tensor(o_embeddings), torch.tensor(u_embeddings), \
             torch.tensor(i_embeddings)
 
+    def _learn_initial_ao_embeddings(self, train_set):
+        ao_fname = 'ao_embeddings.pickle'
+        a_fname = 'aspect_embeddings.pickle'
+        o_fname = 'opinion_embeddings.pickle'
+
+        # Get embeddings and store result
+        a_embeddings, o_embeddings, _ = self._flock_wrapper(self._ao_embeddings, ao_fname, train_set)
+
+        # Scale embeddings and store results. Function returns scaler, which is not needed, but required if new data is
+        # added.
+        a_embeddings, _ = self._flock_wrapper(self._normalize_embedding, a_fname, a_embeddings)
+        o_embeddings, _ = self._flock_wrapper(self._normalize_embedding, o_fname, o_embeddings)
+
+        return torch.tensor(a_embeddings), torch.tensor(o_embeddings)
+
     def fit(self, train_set: Dataset, val_set=None):
         from .lightrla import Model
         from cornac.models import NGCF
+        torch.multiprocessing.set_sharing_strategy('file_system')
+
 
         super().fit(train_set, val_set)
         n_nodes, self.n_relations, self.sid_aos, self.aos_list = self._graph_wrapper(train_set, self.graph_type)  # graphs are as attributes of model.
-        # a_embs, o_embs, u_embs, i_embs = self._learn_initial_embeddings(train_set)
+
+        kwargs = {}
+        if self.embedding_type == 'ao_embeddings':
+            a_embs, o_embs = self._learn_initial_ao_embeddings(train_set)
+            kwargs['ao_embeddings'] = torch.cat([a_embs, o_embs]).to(self.device).to(torch.float32)
 
         if not self.use_relation:
             self.n_relations = 0
 
         self.ui_graph = NGCF.construct_graph(train_set, False)
         n_r_types = max(self.node_review_graph.edata['r_type']) + 1
-        n_sentiments = len(set([aos[2] for sid in self.train_set.sentiment.sentiment.values() for aos in sid]))
 
         # create model
         self.model = Model(self.ui_graph, n_nodes, self.n_relations, n_r_types, self.review_aggregator,
                            self.predictor, self.node_dim, self.num_heads, [self.layer_dropout]*2,
                            self.attention_dropout, self.preference_module, self.use_cuda, combiner=self.combiner,
-                           aos_predictor=self.learn_method, non_linear=self.non_linear)
+                           aos_predictor=self.learn_method, non_linear=self.non_linear,
+                           embedding_type=self.embedding_type, **kwargs)
 
         self.model.reset_parameters()
 
