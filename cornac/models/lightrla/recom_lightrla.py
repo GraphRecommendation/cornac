@@ -313,13 +313,11 @@ class LightRLA(Recommender):
     def _ao_embeddings(self, train_set):
         from gensim.models import Word2Vec
         from gensim.parsing import remove_stopwords, preprocess_string, stem_text
-        import torch
 
         sentiment = train_set.sentiment
 
         # Define preprocess functions for text, aspects and opinions.
-        preprocess_fn = lambda x: stem_text(re.sub(r'\s+', ' ', re.sub(r'--+|-+ ', ' ', re.sub(r'[^\w\-_]', ' ', x))))
-        ao_preprocess_fn = lambda x: stem_text(re.sub(r'--+.*|-+$', '', x))
+        preprocess_fn = lambda x: stem_text(re.sub(r'--+.*|-+$', '', x))
 
         # Process corpus
         corpus = [preprocess_fn(sentence)
@@ -327,8 +325,8 @@ class LightRLA(Recommender):
                   for sentence in review.split('.')]
 
         # Process aspects and opinions.
-        a_old_new_map = {a: ao_preprocess_fn(a) for a in sentiment.aspect_id_map}
-        o_old_new_map = {o: ao_preprocess_fn(o) for o in sentiment.opinion_id_map}
+        a_old_new_map = {a: preprocess_fn(a) for a in sentiment.aspect_id_map}
+        o_old_new_map = {o: preprocess_fn(o) for o in sentiment.opinion_id_map}
 
         # Define a progressbar for easier training.
         class CallbackProgressBar:
