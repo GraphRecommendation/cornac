@@ -302,7 +302,7 @@ class LightRLA(Recommender):
         return data
 
     def _graph_wrapper(self, train_set, graph_type, *args):
-        fname = f'graph_{graph_type}_data.pickle'
+        fname = f'graphv2_{graph_type}_data.pickle'
         data = self._flock_wrapper(self._create_graphs, fname, train_set, graph_type, *args)
 
         n_nodes, n_types, self.n_items, self.train_graph, self.review_graphs, self.node_review_graph, \
@@ -323,11 +323,10 @@ class LightRLA(Recommender):
         # Process corpus
         corpus = []
 
-        for review in tqdm(train_set.review_text.corpus):
+        for review in tqdm(train_set.review_text.corpus, desc='Processing text', disable=not self.verbose):
             for sentence in review.split('.'):
                 words = word_tokenize(sentence.replace(' n\'t ', 'n ').replace('/', ' '))
                 corpus.append(' '.join(preprocess_fn(word) for word in words))
-
 
 
         # Process aspects and opinions.
@@ -471,7 +470,7 @@ class LightRLA(Recommender):
 
 
         super().fit(train_set, val_set)
-        # n_nodes, self.n_relations, self.sid_aos, self.aos_list = self._graph_wrapper(train_set, self.graph_type)  # graphs are as attributes of model.
+        n_nodes, self.n_relations, self.sid_aos, self.aos_list = self._graph_wrapper(train_set, self.graph_type)  # graphs are as attributes of model.
 
         kwargs = {}
         if self.embedding_type == 'ao_embeddings':
