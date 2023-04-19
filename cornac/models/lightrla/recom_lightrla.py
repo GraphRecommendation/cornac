@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from ..recommender import Recommender
 from ...data import Dataset
-from ...utils.graph_construction import generate_mappings
+from ...utils.graph_construction import generate_mappings, stem_fn
 
 
 class LightRLA(Recommender):
@@ -291,7 +291,7 @@ class LightRLA(Recommender):
         lock_fpath = os.path.join(self.out_path, fname + '.lock')
 
         with FileLock(lock_fpath):
-            if os.path.exists(fpath):
+            if False and os.path.exists(fpath):
                 with open(fpath, 'rb') as f:
                     data = pickle.load(f)
             else:
@@ -313,20 +313,28 @@ class LightRLA(Recommender):
     def _ao_embeddings(self, train_set):
         from gensim.models import Word2Vec
         from gensim.parsing import remove_stopwords, preprocess_string, stem_text
+        from nltk.tokenize import word_tokenize
 
         sentiment = train_set.sentiment
 
         # Define preprocess functions for text, aspects and opinions.
-        preprocess_fn = lambda x: stem_text(re.sub(r'--+.*|-+$', '', x))
+        preprocess_fn = stem_fn
 
         # Process corpus
-        corpus = [preprocess_fn(sentence)
-                  for review in train_set.review_text.corpus
-                  for sentence in review.split('.')]
+        corpus = []
+
+        for review in tqdm(train_set.review_text.corpus):
+            for sentence in review.split('.'):
+                words = word_tokenize(sentence.replace(' n\'t ', 'n ').replace('/', ' '))
+                corpus.append(' '.join(preprocess_fn(word) for word in words))
+
+
 
         # Process aspects and opinions.
         a_old_new_map = {a: preprocess_fn(a) for a in sentiment.aspect_id_map}
         o_old_new_map = {o: preprocess_fn(o) for o in sentiment.opinion_id_map}
+
+        _, _, _, _, _, _, a2a, o2o = generate_mappings(train_set.sentiment, 'a', get_ao_mappings=True)
 
         # Define a progressbar for easier training.
         class CallbackProgressBar:
@@ -349,6 +357,11 @@ class LightRLA(Recommender):
 
         # Get words and train model
         wc = [s.split(' ') for s in corpus]
+        all_words = set(s for se in wc for s in se)
+
+        assert all([a in all_words for a in a_old_new_map.values()]), [a for a in a_old_new_map.values() if a not in all_words]
+        assert all([o in all_words for o in o_old_new_map.values()]), [o for o in o_old_new_map.values() if o not in all_words]
+
         l = CallbackProgressBar(self.verbose)
         embedding_dim = 100
         w2v_model = Word2Vec(wc, vector_size=embedding_dim, min_count=1, window=5, callbacks=[l], epochs=100)
@@ -357,20 +370,20 @@ class LightRLA(Recommender):
         kv = w2v_model.wv
 
         # Initialize embeddings
-        a_embeddings = np.zeros((len(sentiment.aspect_id_map), embedding_dim))
-        o_embeddings = np.zeros((len(sentiment.opinion_id_map), embedding_dim))
+        a_embeddings = np.zeros((len(a2a), embedding_dim))
+        o_embeddings = np.zeros((len(o2o), embedding_dim))
 
         # Define function for assigning embeddings to correct aspect.
         def get_info(old_new_pairs, mapping, embedding):
             for old, new in old_new_pairs:
-                nid = mapping[old]
+                nid = mapping(old)
                 vector = np.array(kv.get_vector(new))
                 embedding[nid] = vector
 
             return embedding
 
-        a_embeddings = get_info(a_old_new_map.items(), sentiment.aspect_id_map, a_embeddings)
-        o_embeddings = get_info(o_old_new_map.items(), sentiment.opinion_id_map, o_embeddings)
+        a_embeddings = get_info(a_old_new_map.items(), lambda x: a2a[sentiment.aspect_id_map[x]], a_embeddings)
+        o_embeddings = get_info(o_old_new_map.items(), lambda x: o2o[sentiment.opinion_id_map[x]], o_embeddings)
 
         return a_embeddings, o_embeddings, kv
 
@@ -458,7 +471,7 @@ class LightRLA(Recommender):
 
 
         super().fit(train_set, val_set)
-        n_nodes, self.n_relations, self.sid_aos, self.aos_list = self._graph_wrapper(train_set, self.graph_type)  # graphs are as attributes of model.
+        # n_nodes, self.n_relations, self.sid_aos, self.aos_list = self._graph_wrapper(train_set, self.graph_type)  # graphs are as attributes of model.
 
         kwargs = {}
         if self.embedding_type == 'ao_embeddings':

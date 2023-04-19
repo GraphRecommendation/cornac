@@ -5,9 +5,14 @@ import numpy as np
 from functools import lru_cache
 
 
-def stem(sentiment):
+def stem_fn(x):
     from gensim.parsing import stem_text
-    ao_preprocess_fn = lambda x: stem_text(re.sub(r'--+.*|-+$', '', x))
+
+    return stem_text(re.sub(r'--+.*|-+$|\+\+|\'.+|=+.*$|-\d.*', '', x))
+
+
+def stem(sentiment):
+    ao_preprocess_fn = stem_fn
     import random
     random.seed(42)
     a_id_new = {i: ao_preprocess_fn(e) for e, i in sentiment.aspect_id_map.items()}
