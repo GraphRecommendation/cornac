@@ -383,7 +383,7 @@ class Model(nn.Module):
         if self.embedding_type == 'learned':
             return self.node_embedding(nodes)
         elif self.embedding_type == 'ao_embeddings':
-            filter_val = self.node_embedding.weight.size(0) - self.learned_embeddings.size(0)
+            filter_val = self.node_embedding.weight.size(0)
             mask = nodes >= filter_val
             emb = torch.empty((*nodes.size(), self.node_dim), device=nodes.device)
             emb[~mask] = self.node_embedding(nodes[~mask])

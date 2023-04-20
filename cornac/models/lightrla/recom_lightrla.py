@@ -369,8 +369,8 @@ class LightRLA(Recommender):
         kv = w2v_model.wv
 
         # Initialize embeddings
-        a_embeddings = np.zeros((len(a2a), embedding_dim))
-        o_embeddings = np.zeros((len(o2o), embedding_dim))
+        a_embeddings = np.zeros((len(set(a2a.values())), embedding_dim))
+        o_embeddings = np.zeros((len(set(o2o.values())), embedding_dim))
 
         # Define function for assigning embeddings to correct aspect.
         def get_info(old_new_pairs, mapping, embedding):
@@ -449,9 +449,9 @@ class LightRLA(Recommender):
             torch.tensor(i_embeddings)
 
     def _learn_initial_ao_embeddings(self, train_set):
-        ao_fname = 'ao_embeddings.pickle'
-        a_fname = 'aspect_embeddings.pickle'
-        o_fname = 'opinion_embeddings.pickle'
+        ao_fname = 'ao_embeddingsv2.pickle'
+        a_fname = 'aspect_embeddingsv2.pickle'
+        o_fname = 'opinion_embeddingsv2.pickle'
 
         # Get embeddings and store result
         a_embeddings, o_embeddings, _ = self._flock_wrapper(self._ao_embeddings, ao_fname, train_set)
@@ -476,6 +476,7 @@ class LightRLA(Recommender):
         if self.embedding_type == 'ao_embeddings':
             a_embs, o_embs = self._learn_initial_ao_embeddings(train_set)
             kwargs['ao_embeddings'] = torch.cat([a_embs, o_embs]).to(self.device).to(torch.float32)
+            n_nodes -= kwargs['ao_embeddings'].size(0)
 
         if not self.use_relation:
             self.n_relations = 0
@@ -575,7 +576,7 @@ class LightRLA(Recommender):
             cur_losses = {}
             self.model.train()
 
-            with (dataloader.enable_cpu_affinity() if num_workers else nullcontext()):
+            with (dataloader.enable_cpu_affinity() if False else nullcontext()):
                 with tqdm(dataloader, disable=not self.verbose) as progress:
                     for i, batch in enumerate(progress, 1):
                         if self.objective == 'ranking':
