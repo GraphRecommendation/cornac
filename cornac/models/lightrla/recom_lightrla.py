@@ -112,7 +112,6 @@ class LightRLA(Recommender):
         self.train_graph = None
         self.ui_graph = None
         self.model = None
-        self.is_parallel = False
         self.n_items = 0
         self.n_relations = 0
         self.ntype_ranges = None
@@ -292,7 +291,7 @@ class LightRLA(Recommender):
         lock_fpath = os.path.join(self.out_path, fname + '.lock')
 
         with FileLock(lock_fpath):
-            if os.path.exists(fpath):
+            if False and os.path.exists(fpath):
                 with open(fpath, 'rb') as f:
                     data = pickle.load(f)
             else:
@@ -497,10 +496,6 @@ class LightRLA(Recommender):
             print(f'Number of trainable parameters: {sum(p.numel() for p in self.model.parameters())}')
 
         if self.use_cuda:
-            if torch.cuda.device_count() > 1:
-                self.is_parallel = True
-                self.model = torch.nn.DataParallel(self.model)
-
             self.model = self.model.cuda()
             prefetch = ['label']
         else:
@@ -588,21 +583,15 @@ class LightRLA(Recommender):
                         else:
                             input_nodes, edge_subgraph, blocks = batch
 
-                        if self.is_parallel:
-                            model = self.model.module
-                        else:
-                            model = self.model
+                        x = self.model(blocks, self.model.get_initial_embedings(all_nodes), input_nodes)
 
-                        emb = model.get_initial_embedings(all_nodes)
-                        x = self.model(blocks, emb, input_nodes)
-
-                        pred = model.graph_predict(edge_subgraph, x)
+                        pred = self.model.graph_predict(edge_subgraph, x)
 
                         if self.objective == 'ranking':
-                            pred_j = model.graph_predict(neg_subgraph, x).reshape(-1, self.num_neg_samples)
+                            pred_j = self.model.graph_predict(neg_subgraph, x).reshape(-1, self.num_neg_samples)
                             pred_j = pred_j.reshape(-1, self.num_neg_samples)
                             acc = (pred > pred_j).sum() / pred_j.shape.numel()
-                            loss = model.ranking_loss(pred, pred_j)
+                            loss = self.model.ranking_loss(pred, pred_j)
                             cur_losses['loss'] = loss.detach()
                             cur_losses['acc'] = acc.detach()
 
@@ -611,11 +600,11 @@ class LightRLA(Recommender):
                                 loss += l2
                                 cur_losses['l2'] = l2.detach()
                         else:
-                            loss = model.rating_loss(pred, edge_subgraph.edata['label'])
+                            loss = self.model.rating_loss(pred, edge_subgraph.edata['label'])
                             cur_losses['loss'] = loss.detach()
 
                         if self.learn_explainability:
-                            aos_loss, aos_acc = model.aos_graph_predict(edge_subgraph, x)
+                            aos_loss, aos_acc = self.model.aos_graph_predict(edge_subgraph, x)
                             aos_loss = aos_loss.mean()
                             cur_losses['aos_loss'] = aos_loss.detach()
                             cur_losses['aos_acc'] = (aos_acc.sum() / aos_acc.shape.numel()).detach()
@@ -676,14 +665,9 @@ class LightRLA(Recommender):
         from ...eval_methods.base_method import rating_eval, ranking_eval
         import torch
 
-        if self.is_parallel:
-            model = self.model.module
-        else:
-            model = self.model
-
         self.model.eval()
         with torch.no_grad():
-            model.inference(self.review_graphs, self.node_review_graph, self.ui_graph, self.device, self.batch_size)
+            self.model.inference(self.review_graphs, self.node_review_graph, self.ui_graph, self.device, self.batch_size)
             if self.objective == 'ranking':
                 (result, _) = ranking_eval(self, metrics, self.train_set, val_set)
             else:
