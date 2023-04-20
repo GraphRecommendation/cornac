@@ -291,7 +291,7 @@ class LightRLA(Recommender):
         lock_fpath = os.path.join(self.out_path, fname + '.lock')
 
         with FileLock(lock_fpath):
-            if False and os.path.exists(fpath):
+            if os.path.exists(fpath):
                 with open(fpath, 'rb') as f:
                     data = pickle.load(f)
             else:
