@@ -577,7 +577,7 @@ class Model(nn.Module):
         review_dataset = HearReviewDataset(review_graphs)
         review_sampler = HearReviewSampler(list(review_graphs.keys()))
         review_collator = HearReviewCollator()
-        review_dataloader = dgl.dataloading.GraphDataLoader(review_dataset, batch_size=64, shuffle=False,
+        review_dataloader = dgl.dataloading.GraphDataLoader(review_dataset, batch_size=batch_size, shuffle=False,
                                                             drop_last=False, collate_fn=review_collator.collate,
                                                             sampler=review_sampler)
 
@@ -590,7 +590,7 @@ class Model(nn.Module):
         # Node inference setup
         indices = {'node': node_review_graph.nodes('node')}
         sampler = dgl.dataloading.MultiLayerFullNeighborSampler(1)
-        dataloader = dgl.dataloading.DataLoader(node_review_graph, indices, sampler, batch_size=1024, shuffle=False,
+        dataloader = dgl.dataloading.DataLoader(node_review_graph, indices, sampler, batch_size=batch_size, shuffle=False,
                                                 drop_last=False, device=device)
 
         self.inf_emb = torch.zeros((torch.max(indices['node'])+1, self.node_dim)).to(device)
