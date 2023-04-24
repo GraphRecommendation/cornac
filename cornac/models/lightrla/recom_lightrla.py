@@ -182,6 +182,7 @@ class LightRLA(Recommender):
                     a_o_count[oid] += 1
                     if graph_type == 'ao':
                         n_hyper_edges = 3
+                        n_hyper_edges_types = 4
                         for f, s, t in [[uid, iid, aid], [uid, iid, oid], [uid, aid, oid], [iid, oid, aid]]:
                             edges.append([f, s, edge_id, sent])
                             edges.append([s, t, edge_id, sent])
@@ -194,6 +195,7 @@ class LightRLA(Recommender):
                             edge_id += 1
                     elif graph_type == 'ao-one':
                         n_hyper_edges = 1
+                        n_hyper_edges_types = 1
                         options = [uid, iid, aid, oid]
                         self_loops = list(zip(options, options))
 
@@ -221,14 +223,14 @@ class LightRLA(Recommender):
                 g.ndata['norm'][[uid, iid]] = sqrt(n_hyper_edges * len(aos)) ** -1
 
                 u, v = g.edges()
-                uids_mask = (u >= n_items) * (u < n_items + n_users)
-                aids_mask = (u >= n_items + n_users) * (u < n_items + n_users + n_aspects)
-                oids_mask = u >= n_items + n_users + n_aspects
-                g.edata['type'] = torch.zeros((g.num_edges(),), dtype=torch.int64)
-                g.edata['type'][uids_mask] = 1
-                g.edata['type'][aids_mask] = 2
-                g.edata['type'][oids_mask] = 3
-
+                # uids_mask = (u >= n_items) * (u < n_items + n_users)
+                # aids_mask = (u >= n_items + n_users) * (u < n_items + n_users + n_aspects)
+                # oids_mask = u >= n_items + n_users + n_aspects
+                # g.edata['type'] = torch.zeros((g.num_edges(),), dtype=torch.int64)
+                # g.edata['type'][uids_mask] = 1
+                # g.edata['type'][aids_mask] = 2
+                # g.edata['type'][oids_mask] = 3
+                g.edata['type'] = g.edata['id'] % n_hyper_edges_types
                 g.edata['sent'] = sents.repeat(2)
 
                 # a and o also have three hyper edge triples for each occurrence.
@@ -302,7 +304,7 @@ class LightRLA(Recommender):
         return data
 
     def _graph_wrapper(self, train_set, graph_type, *args):
-        fname = f'graphv2_{graph_type}_data.pickle'
+        fname = f'graphv3_{graph_type}_data.pickle'
         data = self._flock_wrapper(self._create_graphs, fname, train_set, graph_type, *args)
 
         n_nodes, n_types, self.n_items, self.train_graph, self.review_graphs, self.node_review_graph, \
@@ -531,13 +533,13 @@ class LightRLA(Recommender):
             # g = g.to(self.device)
             eids = eids.to(self.device)
             self.node_review_graph = self.node_review_graph.to(self.device)
+            self.ui_graph = self.ui_graph.to(self.device)
             num_workers = 0
 
         if self.debug:
             num_workers = 0
-            thread = False
-        else:
-            thread = None
+
+        thread = False  # Memory saving and does not increase speed.
 
         # Create sampler
         sampler = dgl_utils.HearBlockSampler(self.node_review_graph, self.review_graphs, self.review_aggregator,
@@ -614,7 +616,7 @@ class LightRLA(Recommender):
                         loss.backward()
 
                         for k, v in cur_losses.items():
-                            tot_losses[k] += v
+                            tot_losses[k] += v.cpu()
 
                         if self.summary_writer is not None:
                             for k, v in cur_losses.items():

@@ -40,8 +40,8 @@ class HEAREdgeSampler(dgl.dataloading.EdgePredictionSampler):
             self.output_device)
 
         input_nodes, _, (pos_aos, neg_aos), blocks = self.sampler.sample(g, seed_nodes, exclude_eids, seed_edges)
-        pair_graph.edata['pos'] = pos_aos
-        pair_graph.edata['neg'] = neg_aos
+        pair_graph.edata['pos'] = pos_aos.to(pair_graph.device)
+        pair_graph.edata['neg'] = neg_aos.to(pair_graph.device)
 
         if self.negative_sampler is None:
             return self.assign_lazy_features((input_nodes, pair_graph, blocks))
@@ -87,12 +87,14 @@ class HearBlockSampler(dgl.dataloading.NeighborSampler):
         n_items = self.ui_graph.num_nodes('item')
 
         nodes = self.node_review_graph.nodes('node')
+        device = nodes.device
+        nodes = nodes.cpu()
         data = {
             ('user', 'un', 'node'): (torch.arange(n_users, dtype=torch.int64), nodes[nodes >= n_items]),
             ('item', 'in', 'node'): (torch.arange(n_items, dtype=torch.int64), nodes[nodes < n_items])
         }
 
-        return dgl.heterograph(data, num_nodes_dict={'user': n_users, 'item': n_items, 'node': n_nodes})
+        return dgl.heterograph(data, num_nodes_dict={'user': n_users, 'item': n_items, 'node': n_nodes}).to(device)
 
     def sample(self, g, seed_nodes, exclude_eids=None, seed_edges=None):
         # If exclude eids, find the equivalent eid of the node_review_graph.
@@ -100,7 +102,7 @@ class HearBlockSampler(dgl.dataloading.NeighborSampler):
         lgcn_exclude_eids = None
         if exclude_eids is not None:
             u, v = g.find_edges(exclude_eids)
-            sid = g.edata['sid'][exclude_eids]
+            sid = g.edata['sid'][exclude_eids].to(u.device)
             nrg_exclude_eids = self.node_review_graph.edge_ids(sid, u, etype='part_of')
             lgcn_exclude_eids = dgl.dataloading.find_exclude_eids(
                 self.ui_graph, {'ui': seed_edges}, 'reverse_types', None, {'ui': 'iu', 'iu': 'ui'},

@@ -71,7 +71,7 @@ class AOSPredictionLayer(nn.Module):
 
 
 class HypergraphLayer(nn.Module):
-    def __init__(self, in_dim, out_dim, non_linear=True, op='max', num_layers=1, n_relations=0):
+    def __init__(self, in_dim, out_dim, non_linear=True, op='mean', num_layers=1, n_relations=0):
         super().__init__()
         self.num_layers = num_layers
         self.in_dim = in_dim
@@ -342,7 +342,7 @@ class Model(nn.Module):
 
         final_dim = node_dim
         self.combiner = combiner
-        assert combiner in ['add', 'mul', 'bi-interaction', 'concat']
+        assert combiner in ['add', 'mul', 'bi-interaction', 'concat', 'review-only']
         if combiner == 'concat':
             final_dim *= 2
         elif combiner == 'bi-interaction':
@@ -457,8 +457,10 @@ class Model(nn.Module):
             a = self.add_mlp(x + lx)
             m = self.mul_mlp(x * lx)
             x = a + m
-        else:
+        elif self.combiner == 'mul':
             x = x * lx
+        elif self.combiner == 'review-only':
+            pass
 
         return x
 
@@ -511,14 +513,7 @@ class Model(nn.Module):
         return h.reshape(-1, 1)
 
     def aos_predict(self, user, item, aspect, opinion, sentiment):
-        u_emb, i_emb = self.inf_emb[user], self.inf_emb[item]
-
-        if self.predictor == 'dot':
-            u_emb, i_emb = u_emb * self.lemb[user], i_emb * self.lemb[item]
-        elif self.predictor == 'narre':
-            u_emb, i_emb = torch.cat([u_emb,  self.lemb[user]], dim=-1), torch.cat([i_emb,  self.lemb[item]], dim=-1)
-        else:
-            raise ValueError(f'Predictor not implemented for "{self.predictor}".')
+        u_emb, i_emb = self._combine(user, item)
 
         a_emb, o_emb = self.get_initial_embedings(aspect), self.get_initial_embedings(opinion)
 
@@ -526,7 +521,7 @@ class Model(nn.Module):
 
         return preds
 
-    def predict(self, user, item):
+    def _combine(self, user, item):
         u_emb, i_emb = self.inf_emb[user], self.inf_emb[item]
         lu_emb, li_emb = self.lemb[user], self.lemb[item]
 
@@ -543,9 +538,16 @@ class Model(nn.Module):
             a = self.add_mlp(i_emb + li_emb)
             m = self.mul_mlp(i_emb * li_emb)
             i_emb = a + m
-        else:
+        elif self.combiner == 'mul':
             u_emb *= lu_emb
             i_emb *= li_emb
+        elif self.combiner == 'review-only':
+            pass
+
+        return u_emb, i_emb
+
+    def predict(self, user, item):
+        u_emb, i_emb = self._combine(user, item)
 
         if self.predictor == 'dot':
             pred = self._predict_dot(u_emb, i_emb)
