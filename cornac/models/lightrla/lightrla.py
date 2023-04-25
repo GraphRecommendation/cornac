@@ -12,10 +12,13 @@ from cornac.models.hear.dgl_utils import HearReviewDataset, HearReviewSampler, H
 
 
 class AOSPredictionLayer(nn.Module):
-    def __init__(self, aos_predictor, in_dim1, in_dim2, hidden_dims, n_relations):
+    def __init__(self, aos_predictor, in_dim1, in_dim2, hidden_dims, n_relations, loss='bpr'):
         super().__init__()
+        self.loss = loss
+        assert loss in ['bpr', 'transr'], f'Invalid loss: {loss}'
         dims = [in_dim1*2] + hidden_dims
         max_i = len(dims)
+        r_dim = hidden_dims[-1]
         if aos_predictor == 'non-linear':
             self.mlp_ao = nn.ModuleList(nn.Sequential(
                 *[nn.Sequential(nn.Linear(dims[i], dims[i+1]), nn.LeakyReLU()) for i in range(max_i - 1)]
@@ -24,8 +27,8 @@ class AOSPredictionLayer(nn.Module):
             self.mlp_ui = nn.Sequential(
                 *[nn.Sequential(nn.Linear(dims[i], dims[i+1]), nn.LeakyReLU()) for i in range(max_i - 1)]
             )
+            self.r = nn.Parameter(torch.zeros((n_relations, r_dim)))
         elif aos_predictor == 'transr':
-            r_dim = hidden_dims[-1]
             self.w_aor = nn.Parameter(torch.zeros((n_relations, in_dim1*2, r_dim)))
             self.w_uir = nn.Parameter(torch.zeros((n_relations, in_dim2*2, r_dim)))
             self.r = nn.Parameter(torch.zeros((n_relations, r_dim)))
@@ -55,8 +58,7 @@ class AOSPredictionLayer(nn.Module):
             for r in range(self._n_relations):
                 mask = s == r
                 aos_emb[mask] = self.mlp_ao[r](ao_in[mask])
-
-            pred = (ui_emb.unsqueeze(1) * aos_emb).sum(-1)
+            ui_emb = ui_emb.unsqueeze(1)
         elif self._aos_predictor == 'transr':
             ui_emb = torch.empty((b, n, self._out_dim), device=u_emb.device)
             aos_emb = torch.empty((b, n, self._out_dim), device=u_emb.device)
@@ -64,8 +66,13 @@ class AOSPredictionLayer(nn.Module):
                 mask = s == r
                 ui_emb[mask] = torch.repeat_interleave(ui_in, mask.sum(-1), dim=0) @ self.w_uir[r] + self.r[r]
                 aos_emb[mask] = ao_in[mask] @ self.w_aor[r]
+        else:
+            raise NotImplementedError(self._aos_predictor)
 
+        if self.loss == 'bpr':
             pred = (ui_emb * aos_emb).sum(-1)
+        else:
+            pred = (ui_emb - aos_emb).pow(2).sum(-1)
 
         return pred
 
@@ -359,7 +366,8 @@ class Model(nn.Module):
             self.edge_predictor = dgl.nn.EdgePredictor('ele', node_dim, 1, bias=True)
             self.bias = nn.Parameter(torch.zeros((n_nodes, 1)))
 
-        self.aos_predictor = AOSPredictionLayer(aos_predictor, node_dim, final_dim, [node_dim, 64, 32], 2)
+        self.aos_predictor = AOSPredictionLayer(aos_predictor, node_dim, final_dim, [node_dim, 64, 32], 2,
+                                                loss='transr')
         self.rating_loss_fn = nn.MSELoss(reduction='mean')
         self.bpr_loss_fn = nn.Softplus()
         self.review_embs = None
@@ -500,8 +508,10 @@ class Model(nn.Module):
             a, o, s = g.edata['neg'].permute(2, 0, 1)
             a_emb, o_emb = self.get_initial_embedings(a), self.get_initial_embedings(o)
             preds_j = self.aos_predictor(u_emb, i_emb, a_emb, o_emb, s)
-
-            return self.bpr_loss_fn(- (preds_i - preds_j)), preds_i > preds_j
+            if self.aos_predictor.loss == 'bpr':
+                return self.bpr_loss_fn(- (preds_i - preds_j)), preds_i > preds_j
+            else:
+                return self.bpr_loss_fn(- (preds_j - preds_i)), preds_i < preds_j
 
     def _predict_dot(self, u_emb, i_emb):
         return (u_emb * i_emb).sum(-1)
