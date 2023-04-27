@@ -6,10 +6,8 @@ from dgl.ops import edge_softmax
 from torch import nn
 import dgl.function as fn
 import dgl.sparse as dglsp
-from typing import List, Union
 
 import cornac.models.ngcf.ngcf
-from cornac.models.hear.dgl_utils import HearReviewDataset, HearReviewSampler, HearReviewCollator
 
 
 class AOSPredictionLayer(nn.Module):
@@ -83,29 +81,16 @@ class HypergraphLayer(nn.Module):
                  aggregator='sum'):
         super().__init__()
         self.aggregator = aggregator
-        self.H = H
         self.non_linear = non_linear
-        d_V = {k: v.sum(1) for k, v in H.items()}
-        d_E = {k: v.sum(0) for k, v in H.items()}
 
-        for k in H:
-            nz = d_V[k].nonzero()
-            d_V[k][nz] = d_V[k][nz] ** -.5
-            nz = d_E[k].nonzero()
-            d_E[k][nz] = d_E[k][nz] ** -1
+        self.H = None
+        self.D_e_inv = None
+        self.L_left = None
+        self.L_right = None
+        self.L = None
+        self.O = None
 
-        D_v_invsqrt = {k: dglsp.diag(v) for k, v in d_V.items()}
-        self.D_e_inv = {k: dglsp.diag(v) for k, v in d_E.items()}
-        n_edges = {k: d_E[k].shape[0] for k in H}
-        B = {k: dglsp.identity((n_edges[k], n_edges[k])) for k in H}
-
-        # Compute Laplacian from the equation above.
-        self.L_left = {k: D_v_invsqrt[k] @ H[k] for k in H}
-        self.L_right = {k: H[k].T @ D_v_invsqrt[k] for k in H}
-        self.L = {k: self.L_left[k] @ self.D_e_inv[k] @ self.L_right[k] for k in H}
-
-        # Out representation
-        self.O = {k: self.D_e_inv[k] @ H[k].T for k in H}
+        self.set_matrices(H)
 
         self.num_layers = num_layers
         self.in_dim = in_dim
@@ -117,6 +102,37 @@ class HypergraphLayer(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
         self.activation = nn.LeakyReLU()
+
+    def set_matrices(self, H):
+        self.H = H
+        d_V = {k: v.sum(1) for k, v in H.items()}
+        d_E = {k: v.sum(0) for k, v in H.items()}
+
+        for k in H:
+            nz = d_V[k].nonzero()
+            d_V[k][nz] = d_V[k][nz] ** -.5
+            nz = d_E[k].nonzero()
+            d_E[k][nz] = d_E[k][nz] ** -1
+
+        D_v_invsqrt = {k: dglsp.diag(v) for k, v in d_V.items()}
+        self.D_e_inv = {k: dglsp.diag(v) for k, v in d_E.items()}
+        
+
+        # Compute Laplacian from the equation above.
+        self.L_left = {k: D_v_invsqrt[k] @ H[k] for k in H}
+        self.L_right = {k: H[k].T @ D_v_invsqrt[k] for k in H}
+        self.L = {k: self.L_left[k] @ self.D_e_inv[k] @ self.L_right[k] for k in H}
+
+        # Out representation
+        self.O = {k: self.D_e_inv[k] @ H[k].T for k in H}
+
+    def unset_matrices(self):
+        self.H = None
+        self.D_e_inv = None
+        self.L_left = None
+        self.L_right = None
+        self.L = None
+        self.O = None
 
     def forward(self, x, mask=None):
         node_out = [x]
@@ -361,6 +377,7 @@ class Model(nn.Module):
         self.lightgcn = cornac.models.ngcf.ngcf.Model(g, node_dim, [node_dim]*3, dropout=layer_dropout[0],
                                                   lightgcn=True, use_cuda=use_cuda)
 
+        self.W_s = nn.Linear(node_dim, node_dim, bias=False)
         if aggregator.startswith('narre'):
             self.w_0 = nn.Linear(node_dim, node_dim)
 
@@ -457,28 +474,29 @@ class Model(nn.Module):
 
     def forward(self, blocks, x, input_nodes):
         blocks, lgcn_blocks = blocks
-        # if self.preference_module == 'lightgcn':
-        #     lx = self.lightgcn(lgcn_blocks[0].ndata[dgl.NID], lgcn_blocks[:-1])
-        # elif self.preference_module == 'mf':
-        #     # Get user/item representation without any graph convolutions.
-        #     lx = {ntype: self.lightgcn.features[ntype](nids) for ntype, nids in
-        #           lgcn_blocks[-1].srcdata[dgl.NID].items() if ntype != 'node'}
-        # else:
-        #     raise NotImplementedError(f'{self.preference_module} is not supported')
-        #
-        # g = lgcn_blocks[-1]
-        # with g.local_scope():
-        #     g.srcdata['h'] = lx
-        #     funcs = {etype: (fn.copy_u('h', 'm'), fn.sum('m', 'h')) for etype in g.etypes}
-        #     g.multi_update_all(funcs, 'sum')
-        #     lx = g.dstdata['h']['node']
+        if self.preference_module == 'lightgcn':
+            lx = self.lightgcn(lgcn_blocks[0].ndata[dgl.NID], lgcn_blocks[:-1])
+        elif self.preference_module == 'mf':
+            # Get user/item representation without any graph convolutions.
+            lx = {ntype: self.lightgcn.features[ntype](nids) for ntype, nids in
+                  lgcn_blocks[-1].srcdata[dgl.NID].items() if ntype != 'node'}
+        else:
+            raise NotImplementedError(f'{self.preference_module} is not supported')
+
+        g = lgcn_blocks[-1]
+        with g.local_scope():
+            g.srcdata['h'] = lx
+            funcs = {etype: (fn.copy_u('h', 'm'), fn.sum('m', 'h')) for etype in g.etypes}
+            g.multi_update_all(funcs, 'sum')
+            lx = g.dstdata['h']['node']
 
         x = self.node_dropout(x)
-        lx, x = self.review_representation(x)
+        nx, x = self.review_representation(x)
 
         b, = blocks
-        lx = lx[b.dstdata[dgl.NID]]
-        x = self.review_aggregation(b, x[b.srcdata[dgl.NID]])
+        # lx = lx[b.dstdata[dgl.NID]]
+        nx, x = nx[b.dstdata[dgl.NID]], x[b.srcdata[dgl.NID]]
+        x = self.review_aggregation(b, x)
 
         x, lx = self.node_dropout(x), self.node_dropout(lx)
 
@@ -495,7 +513,7 @@ class Model(nn.Module):
         elif self.combiner == 'review-only':
             pass
 
-        return x
+        return nx, x
 
     def _graph_predict_dot(self, g: dgl.DGLGraph, x):
         with g.local_scope():
@@ -516,10 +534,15 @@ class Model(nn.Module):
             return out
 
     def graph_predict(self, g: dgl.DGLGraph, x):
+        nx, x = x
+
+        u, v = g.edges()
+        p = (nx[u] * self.W_s(nx[v])).sum(-1)
+
         if self.predictor == 'dot':
-            return self._graph_predict_dot(g, x)
+            return p, self._graph_predict_dot(g, x)
         elif self.predictor == 'narre':
-            return self._graph_predict_narre(g, x)
+            return p, self._graph_predict_narre(g, x)
         else:
             raise ValueError(f'Predictor not implemented for "{self.predictor}".')
 
@@ -582,6 +605,7 @@ class Model(nn.Module):
         return u_emb, i_emb
 
     def predict(self, user, item):
+        # u_emb, i_emb = self.inf_emb[user], self.inf_emb[item]
         u_emb, i_emb = self._combine(user, item)
 
         if self.predictor == 'dot':
@@ -609,18 +633,9 @@ class Model(nn.Module):
 
     def inference(self, review_graphs, node_review_graph, ui_graph, device, batch_size):
 
-
-        # Setup for review representation inference
-        review_dataset = HearReviewDataset(review_graphs)
-        review_sampler = HearReviewSampler(list(review_graphs.keys()))
-        review_collator = HearReviewCollator()
-        review_dataloader = dgl.dataloading.GraphDataLoader(review_dataset, batch_size=batch_size, shuffle=False,
-                                                            drop_last=False, collate_fn=review_collator.collate,
-                                                            sampler=review_sampler)
-
         # Review inference
         x = self.get_initial_embedings()
-        self.lemb, self.review_embs = self.review_representation(x)
+        _, self.review_embs = self.review_representation(x)
 
         # Node inference setup
         indices = {'node': node_review_graph.nodes('node')}
@@ -638,14 +653,14 @@ class Model(nn.Module):
             self.review_attention[blocks[0]['part_of'].edata[dgl.EID]] = a
 
         # Node preference embedding
-        # if self.preference_module == 'lightgcn':
-        #     self.lightgcn.inference(ui_graph, batch_size)
-        #     x = self.lightgcn.embeddings
-        # else:
-        #     x = {nt: e.weight for nt, e in self.lightgcn.features.items()}
-        #
-        # x = torch.cat([x['item'], x['user']], dim=0)
-        # self.lemb = lx
+        if self.preference_module == 'lightgcn':
+            self.lightgcn.inference(ui_graph, batch_size)
+            x = self.lightgcn.embeddings
+        else:
+            x = {nt: e.weight for nt, e in self.lightgcn.features.items()}
+
+        x = torch.cat([x['item'], x['user']], dim=0)
+        self.lemb = x
 
 
 

@@ -256,7 +256,7 @@ class GlobalRLA(Recommender):
     def _graph_wrapper(self, train_set, graph_type, *args):
         import dgl.sparse as dglsp
         fname = f'graph_{graph_type}_data.pickle'
-        data = self._flock_wrapper(self._create_graphs, fname, train_set, graph_type, *args, rerun=True)
+        data = self._flock_wrapper(self._create_graphs, fname, train_set, graph_type, *args, rerun=False)
 
         n_nodes, n_types, self.n_items, self.train_graph, self.review_graphs, self.node_review_graph, \
             self.ntype_ranges, sid_aos, aos_list = data
@@ -530,7 +530,7 @@ class GlobalRLA(Recommender):
         optimizer = optim.AdamW(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
 
         if self.objective == 'ranking':
-            metrics = [cornac.metrics.NDCG(), cornac.metrics.AUC(), cornac.metrics.MAP(), cornac.metrics.MRR()]
+            metrics = [cornac.metrics.NDCG()]#, cornac.metrics.AUC(), cornac.metrics.MAP(), cornac.metrics.MRR()]
         else:
             metrics = [cornac.metrics.MSE()]
 
@@ -554,15 +554,25 @@ class GlobalRLA(Recommender):
 
                         x = self.model(blocks, self.model.get_initial_embedings(all_nodes), input_nodes)
 
-                        pred = self.model.graph_predict(edge_subgraph, x)
+                        rp, pred = self.model.graph_predict(edge_subgraph, x)
+                        rp = rp.unsqueeze(-1)
 
                         if self.objective == 'ranking':
-                            pred_j = self.model.graph_predict(neg_subgraph, x).reshape(-1, self.num_neg_samples)
+                            rp_j, pred_j = self.model.graph_predict(neg_subgraph, x)
                             pred_j = pred_j.reshape(-1, self.num_neg_samples)
+                            rp_j = rp_j.reshape(-1, self.num_neg_samples)
                             acc = (pred > pred_j).sum() / pred_j.shape.numel()
                             loss = self.model.ranking_loss(pred, pred_j)
                             cur_losses['loss'] = loss.detach()
                             cur_losses['acc'] = acc.detach()
+
+                            acc = (rp > rp_j).sum() / rp_j.shape.numel()
+                            rl = self.model.ranking_loss(rp, rp_j)
+
+                            cur_losses['rl'] = rl.detach()
+                            cur_losses['racc'] = acc.detach()
+
+                            loss += rl
 
                             if self.l2_weight:
                                 l2 = self.l2_weight * self.model.l2_loss(edge_subgraph, neg_subgraph, x)
@@ -668,6 +678,8 @@ class GlobalRLA(Recommender):
         if save_dir is None:
             return
 
+        self.model.review_conv.unset_matrices()
+        self.review_graphs = {k: v.to_dense() for k, v in self.review_graphs.items()}
         path = super().save(save_dir)
         name = path.rsplit('/', 1)[-1].replace('pkl', 'pt')
 
@@ -685,4 +697,11 @@ class GlobalRLA(Recommender):
 
         return path
 
+    def load(self, model_path, trainable=False):
+        import dgl.sparse as dglsp
+        model = super().load(model_path, trainable)
+        for k, v in model.review_graphs.items():
+            model.review_graphs[k] = dglsp.spmatrix(v.nonzero().T).coalesce()
+
+        model.model.review_conv.set_matrices(model.review_graphs)
 
