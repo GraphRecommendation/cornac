@@ -34,7 +34,7 @@ def run(in_kwargs, dataset, method, save_dir='.'):
     skip_tried = in_kwargs.pop('skip_tried', False)
     objective = in_kwargs['objective'] = in_kwargs.get('objective', 'ranking')  # Ranking is default
 
-    if method in ['hear', 'testrec', 'lightrla']:
+    if method in ['hear', 'testrec', 'lightrla', 'globalrla']:
         default_kwargs = {
             'use_cuda': True,
             'use_uva': False,
@@ -64,6 +64,9 @@ def run(in_kwargs, dataset, method, save_dir='.'):
         elif method == 'lightrla':
             from cornac.models import LightRLA
             model = LightRLA
+        elif method == 'globalrla':
+            from cornac.models import GlobalRLA
+            model = GlobalRLA
         else:
             from cornac.models import TestRec
             model = TestRec

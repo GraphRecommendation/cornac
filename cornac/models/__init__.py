@@ -34,6 +34,7 @@ from .cvaecf import CVAECF
 from .ease import EASE
 from .efm import EFM
 from .global_avg import GlobalAvg
+from .globalrla import GlobalRLA
 from .hagerec import HAGERec
 from .hear import HEAR
 from .hft import HFT
