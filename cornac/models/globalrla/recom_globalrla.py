@@ -530,7 +530,7 @@ class GlobalRLA(Recommender):
         optimizer = optim.AdamW(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
 
         if self.objective == 'ranking':
-            metrics = [cornac.metrics.NDCG()]#, cornac.metrics.AUC(), cornac.metrics.MAP(), cornac.metrics.MRR()]
+            metrics = [cornac.metrics.NDCG(), cornac.metrics.AUC(), cornac.metrics.MAP(), cornac.metrics.MRR()]
         else:
             metrics = [cornac.metrics.MSE()]
 
@@ -679,7 +679,7 @@ class GlobalRLA(Recommender):
             return
 
         self.model.review_conv.unset_matrices()
-        self.review_graphs = {k: v.to_dense() for k, v in self.review_graphs.items()}
+        self.review_graphs = {k: (v.row, v.col, v.shape) for k, v in self.review_graphs.items()}
         path = super().save(save_dir)
         name = path.rsplit('/', 1)[-1].replace('pkl', 'pt')
 
@@ -699,9 +699,11 @@ class GlobalRLA(Recommender):
 
     def load(self, model_path, trainable=False):
         import dgl.sparse as dglsp
+        import torch
+
         model = super().load(model_path, trainable)
         for k, v in model.review_graphs.items():
-            model.review_graphs[k] = dglsp.spmatrix(v.nonzero().T).coalesce()
+            model.review_graphs[k] = dglsp.spmatrix(torch.stack([v[0], v[1]]), shape=v[2]).coalesce().to(model.device)
 
         model.model.review_conv.set_matrices(model.review_graphs)
 
