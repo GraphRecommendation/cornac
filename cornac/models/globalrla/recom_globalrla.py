@@ -49,6 +49,7 @@ class GlobalRLA(Recommender):
                  use_tensorboard=True,
                  out_path=None,
                  popularity_biased_sampling=False,
+                 self_enhance_loss=True,
                  learn_explainability=False,
                  learn_method='transr',
                  learn_weight=1.,
@@ -93,6 +94,7 @@ class GlobalRLA(Recommender):
         self.layer_dropout = layer_dropout
         self.attention_dropout = attention_dropout
         self.stemming = stemming
+        self.self_enhance_loss = self_enhance_loss
         self.learn_explainability = learn_explainability
         self.learn_method = learn_method
         self.learn_weight = learn_weight
@@ -103,7 +105,7 @@ class GlobalRLA(Recommender):
                           'fanout', 'use_relation', 'model_selection', 'review_aggregator', 'objective',
                           'predictor', 'preference_module', 'layer_dropout', 'attention_dropout', 'stemming',
                           'learn_explainability', 'learn_method', 'learn_weight', 'learn_pop_sampling',
-                          'popularity_biased_sampling', 'combiner']
+                          'popularity_biased_sampling', 'combiner','self_enhance_loss']
         self.parameters = collections.OrderedDict({k: self.__getattribute__(k) for k in parameter_list})
 
         # Method
@@ -136,7 +138,7 @@ class GlobalRLA(Recommender):
         assert objective == 'ranking' or objective == 'rating', f'This method only supports ranking or rating, ' \
                                                                 f'not {objective}.'
 
-    def _create_graphs(self, train_set: Dataset, graph_type, self_loop=True):
+    def _create_graphs(self, train_set: Dataset, graph_type):
         import dgl
         import dgl.sparse as dglsp
         import torch
@@ -151,15 +153,21 @@ class GlobalRLA(Recommender):
 
         n_aspects = max(a2a.values()) + 1 if self.stemming else len(sentiment_modality.aspect_id_map)
         n_opinions = max(o2o.values()) + 1 if self.stemming else len(sentiment_modality.opinion_id_map)
-        n_nodes = n_users + n_items + n_aspects + n_opinions
+        n_nodes = n_users + n_items
+        if 'a' in graph_type:
+            n_nodes += n_aspects
+        if 'o' in graph_type:
+            n_nodes += n_opinions
         n_types = 4
 
         user_item_review_map = {(uid + n_items, iid): rid for uid, irid in sentiment_modality.user_sentiment.items()
                                 for iid, rid in irid.items()}
         review_edges = []
         ratings = []
-        hyper_edges = {'p': [], 'n': []}
-        # hyper_edges = {'n': []}
+        if 's' in graph_type:
+            hyper_edges = {'p': [], 'n': []}
+        else:
+            hyper_edges = {'n': []}
         sent_mapping = {-1: 'n', 1: 'p'}
         sid_map = {sid: i for i, sid in enumerate(train_set.sentiment.sentiment)}
         for uid, isid in tqdm(sentiment_modality.user_sentiment.items(), desc='Creating review graphs',
@@ -173,7 +181,10 @@ class GlobalRLA(Recommender):
                 aos = sentiment_modality.sentiment[sid]
                 # sid = sid_map[sid]
                 for aid, oid, s in aos:
-                    sent = sent_mapping[s]
+                    if 's' in graph_type:
+                        sent = sent_mapping[s]
+                    else:
+                        sent = 'n'
                     # sent = 'n'
                     if self.stemming:
                         aid = a2a[aid]
@@ -184,9 +195,12 @@ class GlobalRLA(Recommender):
                         first_sentiment[sent] = False
 
                     aid += n_items + n_users
-                    oid += n_items + n_users + n_aspects
-
-                    hyper_edges[sent].extend([(aid, sid), (oid, sid)])
+                    oid += n_items + n_users
+                    if 'a' in graph_type:
+                        hyper_edges[sent].append((aid, sid))
+                        oid += n_aspects
+                    if 'o' in graph_type:
+                        hyper_edges[sent].append((oid, sid))
 
         for k, v in hyper_edges.items():
             hyper_edges[k] = torch.LongTensor(v).T
@@ -402,7 +416,7 @@ class GlobalRLA(Recommender):
         u_embeddings, i_embeddings = self._flock_wrapper(self._ui_embeddings, ui_fname, train_set)
 
         # Scale embeddings and store results. Function returns scaler, which is not needed, but required if new data is
-        # added.
+        # added.hyper_edges[sent].append((aid, sid))
         a_embeddings, _ = self._flock_wrapper(self._normalize_embedding, a_fname, a_embeddings)
         o_embeddings, _ = self._flock_wrapper(self._normalize_embedding, o_fname, o_embeddings)
         u_embeddings, _ = self._flock_wrapper(self._normalize_embedding, u_fname, u_embeddings)
@@ -431,14 +445,20 @@ class GlobalRLA(Recommender):
         from cornac.models import NGCF
         torch.multiprocessing.set_sharing_strategy('file_system')
 
-
         super().fit(train_set, val_set)
         n_nodes, self.n_relations, self.sid_aos, self.aos_list = self._graph_wrapper(train_set, self.graph_type)  # graphs are as attributes of model.
 
         kwargs = {}
         if self.embedding_type == 'ao_embeddings':
             a_embs, o_embs = self._learn_initial_ao_embeddings(train_set)
-            kwargs['ao_embeddings'] = torch.cat([a_embs, o_embs]).to(self.device).to(torch.float32)
+
+            emb = []
+            if 'a' in self.graph_type:
+                emb.append(a_embs)
+            if 'o' in self.graph_type:
+                emb.append(o_embs)
+
+            kwargs['ao_embeddings'] = torch.cat(emb).to(self.device).to(torch.float32)
             n_nodes -= kwargs['ao_embeddings'].size(0)
 
         if not self.use_relation:
@@ -468,8 +488,8 @@ class GlobalRLA(Recommender):
         else:
             prefetch = []
 
-        x = self.model.get_initial_embedings(torch.arange(n_nodes + kwargs['ao_embeddings'].size(0), device=self.device))
-        self.model.review_conv(x)
+        # x = self.model.get_initial_embedings(torch.arange(n_nodes + kwargs['ao_embeddings'].size(0), device=self.device))
+        # self.model.review_conv(x)
         if self.trainable:
             self._fit(prefetch, val_set)
 
@@ -552,13 +572,13 @@ class GlobalRLA(Recommender):
                         else:
                             input_nodes, edge_subgraph, blocks = batch
 
-                        x = self.model(blocks, self.model.get_initial_embedings(all_nodes), input_nodes)
+                        nx, x, nx_sub = self.model(blocks, self.model.get_initial_embedings(all_nodes), input_nodes)
 
-                        rp, pred = self.model.graph_predict(edge_subgraph, x)
+                        rp, pred = self.model.graph_predict(edge_subgraph, [nx_sub, x])
                         rp = rp.unsqueeze(-1)
 
                         if self.objective == 'ranking':
-                            rp_j, pred_j = self.model.graph_predict(neg_subgraph, x)
+                            rp_j, pred_j = self.model.graph_predict(neg_subgraph, [nx_sub, x])
                             pred_j = pred_j.reshape(-1, self.num_neg_samples)
                             rp_j = rp_j.reshape(-1, self.num_neg_samples)
                             acc = (pred > pred_j).sum() / pred_j.shape.numel()
@@ -569,10 +589,11 @@ class GlobalRLA(Recommender):
                             acc = (rp > rp_j).sum() / rp_j.shape.numel()
                             rl = self.model.ranking_loss(rp, rp_j)
 
-                            cur_losses['rl'] = rl.detach()
-                            cur_losses['racc'] = acc.detach()
+                            if self.self_enhance_loss:
+                                cur_losses['rl'] = rl.detach()
+                                cur_losses['racc'] = acc.detach()
 
-                            loss += rl
+                                loss += rl
 
                             if self.l2_weight:
                                 l2 = self.l2_weight * self.model.l2_loss(edge_subgraph, neg_subgraph, x)
@@ -583,7 +604,7 @@ class GlobalRLA(Recommender):
                             cur_losses['loss'] = loss.detach()
 
                         if self.learn_explainability:
-                            aos_loss, aos_acc = self.model.aos_graph_predict(edge_subgraph, x)
+                            aos_loss, aos_acc = self.model.aos_graph_predict(edge_subgraph, nx, x)
                             aos_loss = aos_loss.mean()
                             cur_losses['aos_loss'] = aos_loss.detach()
                             cur_losses['aos_acc'] = (aos_acc.sum() / aos_acc.shape.numel()).detach()

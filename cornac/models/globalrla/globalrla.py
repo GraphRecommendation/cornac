@@ -141,8 +141,8 @@ class HypergraphLayer(nn.Module):
 
         # Mask if in train
         if mask is not None:
-            D_e = {k: D_e[k] * mask[k] for k in mask}
-            L = {k: self.L_left[k] @ D_e[k] @ self.L_right[k] for k in D_e}
+            D_e = {k: dglsp.diag(D_e[k].val * mask) for k in D_e}
+            L = {k: self.L_left[k]  @ D_e[k] @ self.L_right[k] for k in D_e}
         else:
             L = self.L
 
@@ -157,8 +157,8 @@ class HypergraphLayer(nn.Module):
 
                 o = self.O[k] @ e  # average of nodes participating in review edge
 
-                if mask is not None:
-                    o = mask * o
+                # if mask is not None:
+                #     o = mask * o
 
                 inner_x.append(e)
                 inner_o.append(o)
@@ -473,7 +473,7 @@ class Model(nn.Module):
             return x
 
     def forward(self, blocks, x, input_nodes):
-        blocks, lgcn_blocks = blocks
+        blocks, lgcn_blocks, mask = blocks
         if self.preference_module == 'lightgcn':
             lx = self.lightgcn(lgcn_blocks[0].ndata[dgl.NID], lgcn_blocks[:-1])
         elif self.preference_module == 'mf':
@@ -491,11 +491,11 @@ class Model(nn.Module):
             lx = g.dstdata['h']['node']
 
         x = self.node_dropout(x)
-        nx, x = self.review_representation(x)
+        nx, x = self.review_representation(x, mask)
 
         b, = blocks
         # lx = lx[b.dstdata[dgl.NID]]
-        nx, x = nx[b.dstdata[dgl.NID]], x[b.srcdata[dgl.NID]]
+        x = x[b.srcdata[dgl.NID]]
         x = self.review_aggregation(b, x)
 
         x, lx = self.node_dropout(x), self.node_dropout(lx)
@@ -513,7 +513,7 @@ class Model(nn.Module):
         elif self.combiner == 'review-only':
             pass
 
-        return nx, x
+        return nx, x, nx[b.dstdata[dgl.NID]]
 
     def _graph_predict_dot(self, g: dgl.DGLGraph, x):
         with g.local_scope():
@@ -546,15 +546,15 @@ class Model(nn.Module):
         else:
             raise ValueError(f'Predictor not implemented for "{self.predictor}".')
 
-    def aos_graph_predict(self, g: dgl.DGLGraph, x):
+    def aos_graph_predict(self, g: dgl.DGLGraph, nx, x):
         with g.local_scope():
             u, v = g.edges()
             u_emb, i_emb = x[u], x[v]
             a, o, s = g.edata['pos'].T  # todo reindex a and o to be proper values.
-            a_emb, o_emb = self.get_initial_embedings(a), self.get_initial_embedings(o)
+            a_emb, o_emb = nx[a], nx[o]
             preds_i = self.aos_predictor(u_emb, i_emb, a_emb, o_emb, s)
             a, o, s = g.edata['neg'].permute(2, 0, 1)
-            a_emb, o_emb = self.get_initial_embedings(a), self.get_initial_embedings(o)
+            a_emb, o_emb = nx[a], nx[o]
             preds_j = self.aos_predictor(u_emb, i_emb, a_emb, o_emb, s)
             if self.aos_predictor.loss == 'bpr':
                 return self.bpr_loss_fn(- (preds_i - preds_j)), preds_i > preds_j

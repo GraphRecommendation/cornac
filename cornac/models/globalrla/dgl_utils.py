@@ -107,6 +107,8 @@ class HearBlockSampler(dgl.dataloading.NeighborSampler):
             lgcn_exclude_eids = dgl.dataloading.find_exclude_eids(
                 self.ui_graph, {'ui': seed_edges}, 'reverse_types', None, {'ui': 'iu', 'iu': 'ui'},
                 self.output_device)
+            mask = torch.ones((len(self.sid_aos)))
+            mask[sid] = 0
 
         # Based on seed_nodes, find reviews to represent the nodes.
         input_nodes, output_nodes, blocks = super().sample(self.node_review_graph, {'node': seed_nodes},
@@ -122,7 +124,7 @@ class HearBlockSampler(dgl.dataloading.NeighborSampler):
             for index in torch.where(block.in_degrees(block.dstnodes()) == 0)[0]:
                 perm = torch.randperm(block.num_src_nodes())
                 block.add_edges(block.srcnodes()[perm[:self.fanouts[0]]],
-                                index.repeat(min(self.fanouts[0], block.num_src_nodes())))
+                                index.repeat(min(max(1, self.fanouts[0]), block.num_src_nodes())))
 
         # r_gs = [self.review_graphs[sid] for sid in block.srcdata[dgl.NID].cpu().numpy()]
         # if self.compact:
@@ -181,7 +183,7 @@ class HearBlockSampler(dgl.dataloading.NeighborSampler):
 
         pos_aos, neg_aos = self.aos_list[pos_aos], self.aos_list[neg_aos]
 
-        return input_nodes, output_nodes, [pos_aos, neg_aos], [blocks, blocks2]
+        return input_nodes, output_nodes, [pos_aos, neg_aos], [blocks, blocks2, mask]
 
 
 class HearReviewDataset(torch.utils.data.Dataset):
