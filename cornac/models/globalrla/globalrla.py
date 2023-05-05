@@ -78,10 +78,12 @@ class AOSPredictionLayer(nn.Module):
 
 class HypergraphLayer(nn.Module):
     def __init__(self, H, in_dim, out_dim, non_linear=True, op='mean', num_layers=1, n_relations=0, dropout=0,
-                 aggregator='sum'):
+                 aggregator='sum', attention=True, normalize=False):
         super().__init__()
         self.aggregator = aggregator
         self.non_linear = non_linear
+        self.attention = attention
+        self.normalize = normalize
 
         self.H = None
         self.D_e_inv = None
@@ -89,6 +91,12 @@ class HypergraphLayer(nn.Module):
         self.L_right = None
         self.L = None
         self.O = None
+        self.N = None
+        self.D_v_invsqrt = None
+        self.heads = None
+        self.tails = None
+        self.edges = None
+        self.uniques = None
 
         self.set_matrices(H)
 
@@ -100,6 +108,28 @@ class HypergraphLayer(nn.Module):
                 }) for _ in range(num_layers)
             ])
 
+        if attention:
+            self.W_h = nn.ModuleList([
+                nn.ModuleDict({
+                    k: nn.Linear(in_dim, in_dim) for k in H
+                }) for _ in range(num_layers)
+            ])
+            self.W_e = nn.ModuleList([
+                nn.ModuleDict({
+                    k: nn.Linear(in_dim, in_dim) for k in H
+                }) for _ in range(num_layers)
+            ])
+            self.W_t = nn.ModuleList([
+                nn.ModuleDict({
+                    k: nn.Linear(in_dim, in_dim) for k in H
+                }) for _ in range(num_layers)
+            ])
+            self.A = nn.ModuleList([
+                nn.ModuleDict({
+                    k: nn.Linear(in_dim, 1) for k in H
+                }) for _ in range(num_layers)
+            ])
+
         self.dropout = nn.Dropout(dropout)
         self.activation = nn.LeakyReLU()
 
@@ -107,24 +137,36 @@ class HypergraphLayer(nn.Module):
         self.H = H
         d_V = {k: v.sum(1) for k, v in H.items()}
         d_E = {k: v.sum(0) for k, v in H.items()}
-
+        self.N = {}
         for k in H:
             nz = d_V[k].nonzero()
             d_V[k][nz] = d_V[k][nz] ** -.5
             nz = d_E[k].nonzero()
             d_E[k][nz] = d_E[k][nz] ** -1
+            self.N[k] = H[k] @ H[k].T
 
-        D_v_invsqrt = {k: dglsp.diag(v) for k, v in d_V.items()}
+        self.D_v_invsqrt = {k: dglsp.diag(v) for k, v in d_V.items()}
         self.D_e_inv = {k: dglsp.diag(v) for k, v in d_E.items()}
-        
 
         # Compute Laplacian from the equation above.
-        self.L_left = {k: D_v_invsqrt[k] @ H[k] for k in H}
-        self.L_right = {k: H[k].T @ D_v_invsqrt[k] for k in H}
+        self.L_left = {k: self.D_v_invsqrt[k] @ H[k] for k in H}
+        self.L_right = {k: H[k].T @ self.D_v_invsqrt[k] for k in H}
         self.L = {k: self.L_left[k] @ self.D_e_inv[k] @ self.L_right[k] for k in H}
 
         # Out representation
         self.O = {k: self.D_e_inv[k] @ H[k].T for k in H}
+
+        ## Attention
+        # Get head to tail interactions
+        n = {k: self.H[k] @ self.H[k].T for k in self.H}
+        self.heads = {k: torch.repeat_interleave(n[k].row, n[k].val.to(torch.int64)) for k in n}
+        self.tails = {k: torch.repeat_interleave(n[k].col, n[k].val.to(torch.int64)) for k in n}
+        self.edges = {k: torch.repeat_interleave(self.H[k].col, self.H[k].sum(0)[self.H[k].col].to(torch.int64))
+                      for k in self.H}
+
+        # Find unique head-edge interactions.
+        self.uniques = {k: torch.unique(torch.stack([self.heads[k], self.edges[k]]).T, dim=0, return_inverse=True)
+                        for k in n}
 
     def unset_matrices(self):
         self.H = None
@@ -133,6 +175,62 @@ class HypergraphLayer(nn.Module):
         self.L_right = None
         self.L = None
         self.O = None
+        self.N = None
+        self.D_v_invsqrt = None
+
+    def _attention_v1(self, x, l, k, W_h, W_e, W_t, A, att_mask):
+        u, e_inv = self.uniques[k]
+
+        # Get head, tail, edge representations
+        w_h = W_h[k](self.dropout(x))[self.heads[k]]
+        w_e = W_e[k](self.dropout(self.O[k] @ x))[self.edges[k]]
+        w_t = W_t[k](self.dropout(x))[self.tails[k]]
+
+        # Calculate attention based on head, tail and edge
+        a = torch.exp(A[k](torch.tanh(w_h + w_e + w_t)))
+
+        # sum dst nodes according to edges
+        s = torch.empty((len(u),), dtype=torch.float32, device=u.device).index_add(0, e_inv, a.squeeze())
+
+        # convert back to all head tail interactions
+        s = s[e_inv]
+
+        # softmax normalize
+        a_s = a / s.unsqueeze(-1)
+
+        # Scale with attention
+        e = a_s * l(self.dropout(x))[self.tails[k]]
+
+        # Edge representation
+        e2 = torch.zeros((len(u), e.size(-1)), dtype=torch.float32, device=u.device).index_add(0, e_inv, e)
+
+        if att_mask is not None:
+            e2 = att_mask[k].unsqueeze(-1) * e2
+
+        # Mean over edges
+        # e = torch.zeros_like(x).index_reduce(0, self.H[k].row, e2, 'mean')
+        e = torch.zeros_like(x).index_add(0, self.H[k].row, e2)
+        return e
+
+    def _attention_v2(self, x, l, k, W_h, W_e, W_t, A, att_mask):
+        if att_mask is not None:
+            n = dglsp.val_like(self.H[k], self.H[k].val * att_mask[k])
+            n = n @ n.T
+        else:
+            n = self.N[k]
+
+        # Get head, tail, edge representations
+        w_h = W_h[k](self.dropout(x))[n.row]
+        w_t = W_t[k](self.dropout(x))[n.col]
+
+        # Calculate attention based on head, tail and edge
+        a = A[k](torch.tanh(w_h + w_t)).squeeze()
+
+        am = dglsp.val_like(n, a * n.val)  # scale attention with number of occurrences.
+        a_s = am.softmax()
+
+        e = a_s @ l(self.dropout(x))
+        return e
 
     def forward(self, x, mask=None):
         node_out = [x]
@@ -143,14 +241,27 @@ class HypergraphLayer(nn.Module):
         if mask is not None:
             D_e = {k: dglsp.diag(D_e[k].val * mask) for k in D_e}
             L = {k: self.L_left[k]  @ D_e[k] @ self.L_right[k] for k in D_e}
+            att_mask = {k: torch.repeat_interleave(mask, self.H[k].sum(0).to(torch.int64)) for k in D_e}
         else:
             L = self.L
+            att_mask = None
 
-        for i, layer in enumerate(self.W):
+        if self.attention:
+            iterator = zip(self.W, self.W_h, self.W_e, self.W_t, self.A)
+        else:
+            iterator = self.W
+
+        for i, layer in enumerate(iterator):
+            if self.attention:
+                layer, W_h, W_e, W_t, A = layer
+
             inner_x = []
             inner_o = []
             for k, l in layer.items():
-                e = L[k] @ l(self.dropout(x))
+                if self.attention:
+                    e = self._attention_v2(x, l, k, W_h, W_e, W_t, A, att_mask)
+                else:
+                    e = L[k] @ l(self.dropout(x))
 
                 if self.non_linear:
                     e = self.activation(e)
@@ -167,8 +278,13 @@ class HypergraphLayer(nn.Module):
             if self.aggregator == 'sum':
                 x = x.sum(0)
                 inner_o = torch.stack(inner_o).sum(0)
+
             else:
                 raise NotImplementedError(self.aggregator)
+
+            if self.normalize:
+                x = x / (x.norm(2, dim=-1, keepdim=True) + 1e-5)
+                inner_o = inner_o / (inner_o.norm(2, dim=-1, keepdim=True) + 1e-5)
 
             node_out.append(x)
             review_out.append(inner_o)
@@ -368,7 +484,7 @@ class Model(nn.Module):
             raise ValueError(f'Invalid embedding type {embedding_type}')
 
         n_layers = 3
-        self.review_conv = HypergraphLayer(incidence_dict, node_dim, node_dim, non_linear=non_linear, num_layers=n_layers)
+        self.review_conv = HypergraphLayer(incidence_dict, node_dim, node_dim, non_linear=non_linear, num_layers=n_layers, dropout=layer_dropout[0])
         self.review_agg = HEARConv(aggregator, n_nodes, n_lgcn_relations, node_dim, node_dim, num_heads,
                                    feat_drop=layer_dropout[1], attn_drop=attention_dropout)
 
@@ -383,8 +499,8 @@ class Model(nn.Module):
 
         final_dim = node_dim
         self.combiner = combiner
-        assert combiner in ['add', 'mul', 'bi-interaction', 'concat', 'review-only']
-        if combiner == 'concat':
+        assert combiner in ['add', 'mul', 'bi-interaction', 'concat', 'review-only', 'self', 'self-only']
+        if combiner in ['concat', 'self']:
             final_dim *= 2
         elif combiner == 'bi-interaction':
             self.add_mlp = nn.Sequential(
@@ -512,6 +628,10 @@ class Model(nn.Module):
             x = x * lx
         elif self.combiner == 'review-only':
             pass
+        elif self.combiner == 'self':
+            x = torch.cat([x, nx[b.dstdata[dgl.NID]]], dim=-1)
+        elif self.combiner == 'self-only':
+            x = nx[b.dstdata[dgl.NID]]
 
         return nx, x, nx[b.dstdata[dgl.NID]]
 
@@ -583,7 +703,7 @@ class Model(nn.Module):
         u_emb, i_emb = self.inf_emb[user], self.inf_emb[item]
         lu_emb, li_emb = self.lemb[user], self.lemb[item]
 
-        if self.combiner == 'concat':
+        if self.combiner in ['concat', 'self']:
             u_emb = torch.cat([u_emb, lu_emb], dim=-1)
             i_emb = torch.cat([i_emb, li_emb], dim=-1)
         elif self.combiner == 'add':
@@ -601,6 +721,8 @@ class Model(nn.Module):
             i_emb *= li_emb
         elif self.combiner == 'review-only':
             pass
+        elif self.combiner == 'self-only':
+            u_emb, i_emb = lu_emb, li_emb
 
         return u_emb, i_emb
 
@@ -635,7 +757,7 @@ class Model(nn.Module):
 
         # Review inference
         x = self.get_initial_embedings()
-        _, self.review_embs = self.review_representation(x)
+        nx, self.review_embs = self.review_representation(x)
 
         # Node inference setup
         indices = {'node': node_review_graph.nodes('node')}
@@ -659,7 +781,10 @@ class Model(nn.Module):
         else:
             x = {nt: e.weight for nt, e in self.lightgcn.features.items()}
 
-        x = torch.cat([x['item'], x['user']], dim=0)
+        if self.combiner.startswith('self'):
+            x = nx
+        else:
+            x = torch.cat([x['item'], x['user']], dim=0)
         self.lemb = x
 
 

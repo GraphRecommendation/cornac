@@ -24,6 +24,7 @@ class GlobalRLA(Recommender):
                  num_workers=0,
                  num_epochs=10,
                  early_stopping=10,
+                 eval_interval=1,
                  learning_rate=0.1,
                  weight_decay=0,
                  l2_weight=0.,
@@ -74,6 +75,7 @@ class GlobalRLA(Recommender):
         self.num_workers = num_workers
         self.num_epochs = num_epochs
         self.early_stopping = early_stopping
+        self.eval_interval = eval_interval
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.node_dim = node_dim
@@ -137,6 +139,7 @@ class GlobalRLA(Recommender):
         assert use_uva == use_cuda or not use_uva, 'use_cuda must be true when using uva.'
         assert objective == 'ranking' or objective == 'rating', f'This method only supports ranking or rating, ' \
                                                                 f'not {objective}.'
+        assert early_stopping % eval_interval == 0, 'interval should be a divisor of early stopping value.'
 
     def _create_graphs(self, train_set: Dataset, graph_type):
         import dgl
@@ -624,7 +627,7 @@ class GlobalRLA(Recommender):
                         loss_str = ','.join([f'{k}:{v/i:.3f}' for k, v in tot_losses.items()])
                         if i != epoch_length or val_set is None:
                             progress.set_description(f'Epoch {e}, ' + loss_str)
-                        else:
+                        elif (e + 1) % self.eval_interval == 0:
                             results = self._validate(val_set, metrics)
                             res_str = 'Val: ' + ', '.join([f'{m.name}:{r:.4f}' for m, r in zip(metrics, results)])
                             progress.set_description(f'Epoch {e}, ' + f'{loss_str}, ' + res_str)
