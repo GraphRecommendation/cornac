@@ -44,6 +44,7 @@ class GlobalRLA(Recommender):
                  num_neg_samples=50,
                  layer_dropout=None,
                  attention_dropout=.2,
+                 hypergraph_attention=False,
                  user_based=True,
                  verbose=True,
                  index=0,
@@ -95,6 +96,7 @@ class GlobalRLA(Recommender):
         self.num_neg_samples = num_neg_samples
         self.layer_dropout = layer_dropout
         self.attention_dropout = attention_dropout
+        self.hypergraph_attention = hypergraph_attention
         self.stemming = stemming
         self.self_enhance_loss = self_enhance_loss
         self.learn_explainability = learn_explainability
@@ -139,7 +141,8 @@ class GlobalRLA(Recommender):
         assert use_uva == use_cuda or not use_uva, 'use_cuda must be true when using uva.'
         assert objective == 'ranking' or objective == 'rating', f'This method only supports ranking or rating, ' \
                                                                 f'not {objective}.'
-        assert early_stopping % eval_interval == 0, 'interval should be a divisor of early stopping value.'
+        if early_stopping is not None:
+            assert early_stopping % eval_interval == 0, 'interval should be a divisor of early stopping value.'
 
     def _create_graphs(self, train_set: Dataset, graph_type):
         import dgl
@@ -477,7 +480,8 @@ class GlobalRLA(Recommender):
                            self.predictor, self.node_dim, self.review_graphs, self.num_heads, [self.layer_dropout]*2,
                            self.attention_dropout, self.preference_module, self.use_cuda, combiner=self.combiner,
                            aos_predictor=self.learn_method, non_linear=self.non_linear,
-                           embedding_type=self.embedding_type, **kwargs)
+                           embedding_type=self.embedding_type, hypergraph_attention=self.hypergraph_attention,
+                           **kwargs)
 
 
         self.model.reset_parameters()

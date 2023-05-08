@@ -77,8 +77,8 @@ class AOSPredictionLayer(nn.Module):
 
 
 class HypergraphLayer(nn.Module):
-    def __init__(self, H, in_dim, out_dim, non_linear=True, op='mean', num_layers=1, n_relations=0, dropout=0,
-                 aggregator='sum', attention=True, normalize=False):
+    def __init__(self, H, in_dim, non_linear=True, num_layers=1, dropout=0, aggregator='sum', attention=True,
+                 normalize=False):
         super().__init__()
         self.aggregator = aggregator
         self.non_linear = non_linear
@@ -461,6 +461,7 @@ class Model(nn.Module):
                  incidence_dict,
                  num_heads, layer_dropout, attention_dropout, preference_module='lightgcn', use_cuda=True,
                  combiner='add', aos_predictor='non-linear', non_linear=False, embedding_type='learned',
+                 hypergraph_attention=False,
                  **kwargs):
         super().__init__()
 
@@ -484,7 +485,8 @@ class Model(nn.Module):
             raise ValueError(f'Invalid embedding type {embedding_type}')
 
         n_layers = 3
-        self.review_conv = HypergraphLayer(incidence_dict, node_dim, node_dim, non_linear=non_linear, num_layers=n_layers, dropout=layer_dropout[0])
+        self.review_conv = HypergraphLayer(incidence_dict, node_dim, non_linear=non_linear, num_layers=n_layers,
+                                           dropout=layer_dropout[0], attention=hypergraph_attention)
         self.review_agg = HEARConv(aggregator, n_nodes, n_lgcn_relations, node_dim, node_dim, num_heads,
                                    feat_drop=layer_dropout[1], attn_drop=attention_dropout)
 
