@@ -28,7 +28,6 @@ class GlobalRLA(Recommender):
                  learning_rate=0.1,
                  weight_decay=0,
                  l2_weight=0.,
-                 n_layers=5,
                  node_dim=64,
                  num_heads=3,
                  fanout=5,
@@ -40,7 +39,7 @@ class GlobalRLA(Recommender):
                  predictor='narre',
                  preference_module='lightgcn',
                  combiner='add',
-                 graph_type='ao',
+                 graph_type='aos',
                  num_neg_samples=50,
                  layer_dropout=None,
                  attention_dropout=.2,
@@ -81,7 +80,6 @@ class GlobalRLA(Recommender):
         self.weight_decay = weight_decay
         self.node_dim = node_dim
         self.l2_weight = l2_weight
-        self.n_layers = n_layers
         self.num_heads = num_heads
         self.fanout = fanout
         self.use_relation = use_relation

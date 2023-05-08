@@ -46,6 +46,22 @@ def create_hyperparameter_dict(comb, model_parameters, shared_parameters, defaul
     params.update(default_parameters)
     return params
 
+def validate_hyperparameters(dictionary):
+    info = []
+    for pp in dictionary['phases']:
+        arguments = set()
+        for k, v in pp.items():
+            arguments.update(list(v.keys()))
+
+        values = list(pp.get('tune', {}).values())
+        n = len(list(itertools.product(*values)))
+        info.append((arguments, n))
+
+    example = info[0][0]
+    for i, res in enumerate(info):
+        assert example == res[0], f'Hyperparameters for phase {i} does not match: {res[0]}'
+        print(i, "Found combination lengths:", res[1])
+
 
 def run(dataset, method, path='results'):
     global GPUS
@@ -64,6 +80,8 @@ def run(dataset, method, path='results'):
     method_dict = methods_hyperparameters[method_name]
 
     default_parameters = method_dict.get('default', {})
+
+    validate_hyperparameters(method_dict)
 
     if bpr_flag:
         default_parameters['use_bpr'] = True
