@@ -112,7 +112,7 @@ def initialize_dataset(dataset):
 
 METHOD_NAMES = {'lightrla': 'LightRLA', 'narre': 'NARRE', 'hrdr': 'HRDR', 'kgat': 'KGAT', 'bpr': 'BPR',
              'trirank': 'TriRank', 'narre-bpr': 'NARRE_BPR', 'hrdr-bpr': 'HRDR_BPR', 'ngcf': 'ngcf',
-             'lightgcn': 'lightgcn', 'light-e-cyclic': 'light-e-cyclic'}
+             'lightgcn': 'lightgcn', 'light-e-cyclic': 'light-e-cyclic', 'global': 'LightRLA'}
 METHOD_REMATCH = {'narre-bpr': 'narre', 'hrdr-bpr': 'hrdr'}
 
 
