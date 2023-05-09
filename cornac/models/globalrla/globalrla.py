@@ -515,7 +515,7 @@ class Model(nn.Module):
             )
 
         if self.predictor == 'narre':
-            self.edge_predictor = dgl.nn.EdgePredictor('ele', node_dim, 1, bias=True)
+            self.edge_predictor = dgl.nn.EdgePredictor('ele', final_dim, 1, bias=True)
             self.bias = nn.Parameter(torch.zeros((n_nodes, 1)))
 
         self.aos_predictor = AOSPredictionLayer(aos_predictor, node_dim, final_dim, [node_dim, 64, 32], 2,
