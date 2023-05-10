@@ -8,7 +8,6 @@
     "user_based": true,
     "verbose": false,
     "objective": "ranking",
-    "predictor": "narre",
     "eval_interval": 1
   },
   "lightrla": {
