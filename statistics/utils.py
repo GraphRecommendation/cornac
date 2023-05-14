@@ -112,7 +112,8 @@ def initialize_dataset(dataset):
 
 METHOD_NAMES = {'lightrla': 'LightRLA', 'narre': 'NARRE', 'hrdr': 'HRDR', 'kgat': 'KGAT', 'bpr': 'BPR',
              'trirank': 'TriRank', 'narre-bpr': 'NARRE_BPR', 'hrdr-bpr': 'HRDR_BPR', 'ngcf': 'ngcf',
-             'lightgcn': 'lightgcn', 'light-e-cyclic': 'light-e-cyclic', 'globalrla': 'LightRLA'}
+             'lightgcn': 'lightgcn', 'light-e-cyclic': 'light-e-cyclic', 'globalrla': 'LightRLA',
+             'globalrla-e': 'LightRLA'}
 METHOD_REMATCH = {'narre-bpr': 'narre', 'hrdr-bpr': 'hrdr'}
 
 
@@ -126,5 +127,8 @@ def initialize_model(path, dataset, method):
     file = data['file']
     with open(os.path.join(dir_path, file), 'rb') as f:
         model = pickle.load(f)
+
+    if method in ['narre', 'hrdr']:
+        model = model.load(os.path.join(dir_path, file))
 
     return model
