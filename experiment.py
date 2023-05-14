@@ -28,13 +28,15 @@ from cornac.data.text import BaseTokenizer
 
 import sys
 
+from cornac.models import MTER
+
 
 def run(in_kwargs, dataset, method, save_dir='.'):
     user_based = in_kwargs.pop('user_based', True)
     skip_tried = in_kwargs.pop('skip_tried', False)
     objective = in_kwargs['objective'] = in_kwargs.get('objective', 'ranking')  # Ranking is default
 
-    if method in ['hear', 'testrec', 'lightrla', 'globalrla']:
+    if method in ['hear', 'testrec', 'lightrla', 'globalrla', 'globalrla-e']:
         default_kwargs = {
             'use_cuda': True,
             'use_uva': False,
@@ -64,7 +66,7 @@ def run(in_kwargs, dataset, method, save_dir='.'):
         elif method == 'lightrla':
             from cornac.models import LightRLA
             model = LightRLA
-        elif method == 'globalrla':
+        elif method in ['globalrla', 'globalrla-e']:
             from cornac.models import GlobalRLA
             model = GlobalRLA
         else:
@@ -199,6 +201,24 @@ def run(in_kwargs, dataset, method, save_dir='.'):
 
         from cornac.models import NGCF
         model = NGCF
+    elif method == 'mter':
+        dim = in_kwargs.get('dim', 30)
+        default_kwargs = {
+            'n_user_factors':dim,
+            'n_item_factors':dim,
+            'n_aspect_factors':12,
+            'n_opinion_factors':12,
+            'n_bpr_samples':256,
+            'n_element_samples':256,
+            'lambda_reg':0.1,
+            'lambda_bpr':10,
+            'max_iter':200000,
+            'lr':0.001,
+            'early_stopping': 5000,
+            'eval_interval': 5
+        }
+        model = MTER
+        print('working 1')
     else:
         raise NotImplementedError
 

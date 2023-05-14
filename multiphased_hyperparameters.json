@@ -304,6 +304,39 @@
       "graph_type": "aos"
     }
   },
+  "globalrla-e": {
+    "phases": [
+      {
+        "tune": {
+          "learn_weight": [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 1.0, 5.0]
+        },
+        "fixed": {
+          "weight_decay": 0.001,
+          "learning_rate": 0.001,
+          "dropout": 0.2,
+          "review_aggregator": "narre",
+          "preference_module": "lightgcn",
+          "combiner": "concat",
+          "predictor": "dot",
+          "self_enhance_loss": false,
+          "node_dim": 64
+        }
+      }
+    ],
+    "default": {
+      "l2_weight": 0,
+      "num_neg_samples": 50,
+      "stemming": true,
+      "num_heads": 3,
+      "fanout": -1,
+      "non_linear": true,
+      "learn_explainability": false,
+      "learn_method": "transr",
+      "learn_pop_sampling": false,
+      "embedding_type": "ao_embeddings",
+      "graph_type": "aos"
+    }
+  },
   "kgat": {
     "phases": [
       {
