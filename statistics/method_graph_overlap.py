@@ -30,7 +30,7 @@ def run(path, dataset, method, method_kwargs, draw=False, rerun=False):
     uig = None
     if (not os.path.isfile(review_fname) or rerun) and method not in ['kgat']:
         for user, item in tqdm(list(zip(*eval_method.test_set.csr_matrix.nonzero()))):
-            if method == 'lightrla':
+            if method in ['lightrla', 'globalrla', 'globalrla-e']:
                 r = reverse_path(eval_method, user, item, matching_method)
                 # TODO fix, should not be none or better handling
                 if r is None:
@@ -43,7 +43,8 @@ def run(path, dataset, method, method_kwargs, draw=False, rerun=False):
                     draw_reviews(eval_method, sids, user, item, matching_method)
 
                 res.append(r)
-            elif method == 'narre':
+            elif method in ['narre', 'hrdr']:
+
                 rids = narre_graph_overlap.get_reviews(eval_method, model, matching_method)
                 uis.append((user, item, tuple(rids[item])))
             else:
@@ -57,7 +58,7 @@ def run(path, dataset, method, method_kwargs, draw=False, rerun=False):
             uis = pickle.load(f)
 
     # Create graph
-    if method == 'lightrla':
+    if method in ['lightrla', 'globalrla']:
         uig = lightrla_graph_overlap.sid_to_graphs(eval_method, uis, matching_method)
     elif method == 'kgat':
         _, lightrla_fname = get_method_paths(method_kwargs, dataset, 'lightrla')

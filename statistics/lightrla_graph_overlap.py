@@ -9,11 +9,12 @@ import networkx as nx
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
+import matplotlib as mpl
 from tqdm import tqdm
 
 from cornac.models.lightrla.dgl_utils import extract_attention
 from cornac.utils.graph_construction import generate_mappings
-from statistics.utils import id_mapping
+from statistics.utils import id_mapping, reverse_id_mapping
 
 
 def draw_test(edges):
@@ -346,9 +347,90 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
     g = nx.MultiGraph()
     g.add_edges_from(data)
 
+    # get labels
+
+    def get_name(eval_method, org_map, new_map, index):
+        from collections import Counter
+        c = Counter([org_map[s[index]] for ss in eval_method.sentiment.sentiment.values() for s in ss])
+        name_map = {}
+
+        for k, v in new_map.items():
+            n = org_map[k]
+            if v in name_map:
+                if c[n] > c[name_map[v]]:
+                    name_map[v] = n
+            else:
+                name_map[v] = n
+
+        return name_map
+
+
+    def plotter(g, labels, mapper, all_nodes=False):
+        import matplotlib.pyplot as plt
+        pos = nx.spring_layout(g,k=5/math.sqrt(g.order()))
+        ax = plt.gca()
+        nodes = [n for n in g.nodes if g.degree[n] > 1 or all_nodes]
+        labels = {n: l for n, l in labels.items() if n in nodes}
+        for s, d, e in g.edges:
+            if s not in nodes or d not in nodes:
+                continue
+
+            arc = (e // 2) + 1 if len(g[s][d]) > 1 else 0
+            direction = -1 if e % 2 == 0 else 1
+            ax.annotate("",
+                        xy=pos[s], xycoords='data',
+                        xytext=pos[d], textcoords='data',
+                        arrowprops=dict(arrowstyle="-", color=mapper.to_rgba(g[s][d][e]['color']),
+                                        shrinkA=5, shrinkB=5,
+                                        patchA=None, patchB=None,
+                                        connectionstyle="arc3,rad=rrr".replace('rrr',str(0.1*arc*direction)),
+                                        ),
+                        )
+
+        nx.draw_networkx_nodes(g, pos=pos, nodelist=nodes)
+        nx.draw_networkx_labels(g, pos=pos, labels=labels)
+        # nx.draw_networkx_edges(g, pos=pos, edge_color=[mapper.to_rgba(g[s][d][e]['color']) for s, d, e in g.edges])
+        fig = plt.gcf()
+        fig.set_size_inches(18.5, 10.5)
+        plt.show()
+
     # Get user and item
     _, item = next(iter(edges[0]))
     user, _ = next(iter(edges[max(edges)]))
+
+    flag = eval_method.test_set.csr_matrix[user-eval_method.train_set.num_items, item] >=4 and e_length == 2
+    if flag:
+        labels = {}
+        aspect_name = {v: k for k, v in eval_method.sentiment.aspect_id_map.items()}
+        opinion_name = {v: k for k, v in eval_method.sentiment.opinion_id_map.items()}
+        reverse_a = get_name(eval_method, aspect_name, a2a, 0)
+        reverse_o = get_name(eval_method, opinion_name, o2o, 1)
+        sid_rid = {eval_method.sentiment.user_sentiment[uid][iid]: rid for uid, irid in eval_method.review_text.user_review.items() for iid, rid in irid.items()}
+
+        test_edges = []
+        sid_color = {}
+        for src, _, info in data:
+            sid = info['sid']
+            labels[src] = src
+            for aos in sent_aos[sid]:
+                aosid = id_mapping(eval_method, aos, match)
+                if isinstance(aos, tuple):
+                    labels[aosid] = tuple([reverse_a[n] if t == 'a' else reverse_o[n]
+                                                                          for n, t in zip(aos, match)])
+                else:
+                    labels[aosid] = reverse_a[aos] if match == 'a' else reverse_o[aos]
+
+                if sid in sid_color:
+                    color = sid_color[sid]
+                else:
+                    sid_color[sid] = len(sid_color)
+                test_edges.append((src, aosid, {'sid': sid, 'color': sid_color[sid]}))
+        g_test = nx.MultiGraph()
+        g_test.add_edges_from(test_edges)
+        low, *_, high = sorted(info['color'] for _, _, info in test_edges)
+        norm = mpl.colors.Normalize(vmin=low, vmax=high, clip=True)
+        mapper = mpl.cm.ScalarMappable(norm=norm, cmap=mpl.cm.coolwarm)
+        plotter(g_test, labels, mapper)
 
     # Weighted is the best path taking both user, item, and intermediary paths into account.
     # Greedy always takes the best first, while still ensuring it is the shortest (unweighted) path.
@@ -389,6 +471,15 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
 
         path.extend(list(paths.pop()))
         # assert path == nx.shortest_path(g, source=user, target=item, weight='weight')
+    elif methodology == 'item':
+        node = None
+        bw = -1
+        for a, b in g[item].items():
+            for c, d in b.items():
+                if d['weight'] > bw:
+                    node = a
+                    bw = d['weight']
+        path = [item, node]
     else:
         raise NotImplementedError
 

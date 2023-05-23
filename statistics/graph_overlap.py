@@ -8,7 +8,7 @@ import pandas as pd
 
 from cornac.utils.graph_construction import generate_mappings
 from statistics import utils
-from statistics.utils import id_mapping
+from statistics.utils import id_mapping, get_method_paths
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--datasets', nargs='+')
@@ -114,6 +114,7 @@ def run(datasets, methods, data_path='experiment/seer-ijcai2020/', matching_meth
     mask = None
     ui_pairs = None
     base_path = 'statistics/output/'
+    method_kwargs = {'kgat': {}, 'globalrla': {'methodology': file_args,'weighting':'attention'}, 'matching_method': matching_methodology}
     for dataset in datasets:
         print(f'----{dataset}----')
         all_results[dataset] = {}
@@ -122,11 +123,10 @@ def run(datasets, methods, data_path='experiment/seer-ijcai2020/', matching_meth
         ui_nodes = extract_test_nodes(df, eval_method, matching_methodology)
 
         for method in methods:
-            fname = os.path.join(base_path, f'selected_graphs_{dataset}_{method}_{matching_methodology}' \
-                f'{"_" + file_args if file_args else ""}.pickle')
+            review_fname, graph_fname = get_method_paths(method_kwargs, dataset, method)
 
             # Load
-            with open(fname, 'rb') as f:
+            with open(graph_fname, 'rb') as f:
                 data = pickle.load(f)
 
             all_results[dataset][method] = statistics(eval_method, ui_nodes, data)
