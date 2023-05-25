@@ -1,5 +1,6 @@
 import os
 import pickle
+from functools import reduce
 
 import pandas as pd
 
@@ -51,15 +52,46 @@ def id_mapping(eval_method, eid, type):
     else:
         raise NotImplementedError
 
+def reverse_id_mapping(eval_method, eid, type):
+    num_items = eval_method.train_set.num_items
+    num_users = eval_method.train_set.num_users
+    num_aspects = eval_method.sentiment.num_aspects
+    num_opinions = eval_method.sentiment.num_opinions
+
+    n_map = {'a': num_aspects, 'o': num_opinions, 's': 2}
+
+    if type == 'i':
+        return eid
+    elif type == 'u':
+        return eid - num_items
+    elif type == 'a':
+        return eid - num_items - num_users
+    elif type == 'o':
+        return eid - num_items - num_users - num_aspects
+    elif type in ['aos', 'as', 'ao']:
+        # create unique mapping for all aos combinations
+        tot = eid
+        scale = reduce(lambda x, y: x * y, [n_map[t] for t in type])
+        eid = [0 for i in range(len(type))]
+        for i, t in reversed(list(enumerate(type))):
+            inc = n_map[t]
+            scale /= inc
+            eid[i] = int(tot // scale)
+            tot -= scale * eid[i]
+
+        return tuple(eid)
+    else:
+        raise NotImplementedError
+
 
 def get_method_paths(method_kwargs, dataset, method):
-    ext = f'{method_kwargs["matching_method"]}_{"_".join(f"{k}_{v}" for k, v in method_kwargs[method].items())}'
+    ext = f'{method_kwargs["matching_method"]}_{"_".join(f"{k}_{v}" for k, v in sorted(method_kwargs[method].items()))}'
 
     review_fname = f'statistics/output/selected_reviews_{dataset}_{method}_{ext}.pickle'
 
     # Graph of kgat is dependent on the methodology of lightrla.
     if method == 'kgat':
-        ext += '_'"_".join(f"{k}_{v}" for k, v in method_kwargs['lightrla'].items())
+        ext += '_'"_".join(f"{k}_{v}" for k, v in sorted(method_kwargs['globalrla'].items()))
 
     graph_fname = f'statistics/output/selected_graphs_{dataset}_{method}_{ext}.pickle'
     return review_fname, graph_fname
@@ -113,7 +145,7 @@ def initialize_dataset(dataset):
 METHOD_NAMES = {'lightrla': 'LightRLA', 'narre': 'NARRE', 'hrdr': 'HRDR', 'kgat': 'KGAT', 'bpr': 'BPR',
              'trirank': 'TriRank', 'narre-bpr': 'NARRE_BPR', 'hrdr-bpr': 'HRDR_BPR', 'ngcf': 'ngcf',
              'lightgcn': 'lightgcn', 'light-e-cyclic': 'light-e-cyclic', 'globalrla': 'LightRLA',
-             'globalrla-e': 'LightRLA'}
+             'globalrla-e': 'LightRLA', 'globalrla-le': 'LightRLA', 'globalrla-l': 'LightRLA'}
 METHOD_REMATCH = {'narre-bpr': 'narre', 'hrdr-bpr': 'hrdr'}
 
 
@@ -129,6 +161,8 @@ def initialize_model(path, dataset, method):
         model = pickle.load(f)
 
     if method in ['narre', 'hrdr']:
+        model = model.load(os.path.join(dir_path, file))
+    elif method.startswith('globalrla'):
         model = model.load(os.path.join(dir_path, file))
 
     return model
