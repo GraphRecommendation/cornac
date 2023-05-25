@@ -480,7 +480,8 @@
     "phases": [
       {
         "tune": {
-          "graph_type": ["ao", "as", "s", "a", "os", "o", ""]
+          "graph_type": ["ao", "as", "s", "a", "os", "o", ""],
+          "preference_module": ["lightgcn", "mf"]
         },
         "fixed": {
           "weight_decay": 0.001,
