@@ -36,8 +36,7 @@ def run(in_kwargs, dataset, method, save_dir='.'):
     skip_tried = in_kwargs.pop('skip_tried', False)
     objective = in_kwargs['objective'] = in_kwargs.get('objective', 'ranking')  # Ranking is default
 
-    if method in ['hear', 'testrec', 'lightrla', 'globalrla', 'globalrla-e', 'globalrla-l', 'globalrla-le',
-                  'globalrla-l']:
+    if method in ['hear', 'testrec', 'lightrla'] or method.startswith('globalrla'):
         default_kwargs = {
             'use_cuda': True,
             'use_uva': False,
