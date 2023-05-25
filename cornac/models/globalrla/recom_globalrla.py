@@ -732,4 +732,4 @@ class GlobalRLA(Recommender):
             model.review_graphs[k] = dglsp.spmatrix(torch.stack([v[0], v[1]]), shape=v[2]).coalesce().to(model.device)
 
         model.model.review_conv.set_matrices(model.review_graphs)
-
+        return model

@@ -20,7 +20,8 @@ BASE_STR = config['BASE']
 
 name_dict = {'lightrla': 'LightRLA', 'narre': 'NARRE', 'hrdr': 'HRDR', 'kgat': 'KGAT', 'bpr': 'BPR',
              'trirank': 'TriRank', 'narre-bpr': 'NARRE_BPR', 'hrdr-bpr': 'HRDR_BPR', 'ngcf': 'ngcf',
-             'lightgcn': 'lightgcn', 'globalrla': 'LightRLA'}
+             'lightgcn': 'lightgcn', 'globalrla': 'LightRLA', 'globalrla-l': 'LightRLA', 'globalrla-le': 'LightRLA',
+             'globalrla-e': 'LightRLA'}
 
 
 def process_runner(dataset, method, parameters, gpu):

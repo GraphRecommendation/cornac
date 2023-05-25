@@ -304,6 +304,112 @@
       "graph_type": "aos"
     }
   },
+  "globalrla-l": {
+    "phases": [
+      {
+        "tune": {
+          "weight_decay": [
+            1e-6,
+            1e-5,
+            1e-4,
+            1e-3,
+            1e-2
+          ],
+          "learning_rate": [
+            0.00001,
+            0.0001,
+            0.001,
+            0.01
+          ],
+          "dropout": [
+            0.0,
+            0.1,
+            0.2,
+            0.3,
+            0.4,
+            0.5,
+            0.6
+          ]
+        },
+        "optimal": {
+          "review_aggregator": "narre",
+          "preference_module": "lightgcn",
+          "combiner": "concat",
+          "predictor": "dot",
+          "self_enhance_loss": false,
+          "learn_weight": 0,
+          "node_dim": 64
+        }
+      },
+      {
+        "tune": {
+          "review_aggregator": [
+            "narre",
+            "narre-rel"
+          ],
+          "preference_module": [
+            "mf",
+            "lightgcn"
+          ],
+          "combiner": [
+            "add",
+            "mul",
+            "bi-interaction",
+            "concat"
+          ],
+          "predictor": [
+            "narre", "dot"
+          ],
+          "self_enhance_loss": [
+            true, false
+          ],
+          "learn_weight": [
+            0.1, 0.01, 0.5
+          ]
+        },
+        "optimal": {
+          "weight_decay": 1e-5,
+          "learning_rate": 0.0001,
+          "dropout": 0.2,
+          "node_dim": 64
+        }
+      },
+      {
+        "tune": {
+          "node_dim": [
+            32,
+            64,
+            128
+          ]
+        },
+        "optimal": {
+          "review_aggregator": "narre",
+          "preference_module": "lightgcn",
+          "combiner": "concat",
+          "weight_decay": 1e-5,
+          "learning_rate": 0.0001,
+          "dropout": 0.2,
+          "predictor": "dot",
+          "self_enhance_loss": false,
+          "learn_weight": 0
+        }
+      }
+    ],
+    "default": {
+      "l2_weight": 0,
+      "num_neg_samples": 50,
+      "fanout": 10,
+      "stemming": true,
+      "num_heads": 3,
+      "fanout": -1,
+      "non_linear": true,
+      "learn_explainability": false,
+      "learn_method": "transr",
+      "learn_pop_sampling": false,
+      "embedding_type": "learned",
+      "graph_type": "aos"
+    }
+  },
   "globalrla-e": {
     "phases": [
       {
