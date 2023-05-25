@@ -149,10 +149,14 @@ METHOD_NAMES = {'lightrla': 'LightRLA', 'narre': 'NARRE', 'hrdr': 'HRDR', 'kgat'
 METHOD_REMATCH = {'narre-bpr': 'narre', 'hrdr-bpr': 'hrdr'}
 
 
-def initialize_model(path, dataset, method):
+def initialize_model(path, dataset, method, parameter_kwargs=None):
     name = METHOD_NAMES.get(method, method)
     dir_path = os.path.join(path, dataset, METHOD_REMATCH.get(method, method), name)
     df = pd.read_csv(os.path.join(dir_path, 'results.csv'), index_col=None)
+
+    if parameter_kwargs is not None:
+        for p, v in parameter_kwargs.items():
+            df = df[df[p] == v]
 
     best_df = df[df.score == df.score.max()]
     data = best_df.loc[best_df.index[0]].to_dict()  # get results as row
