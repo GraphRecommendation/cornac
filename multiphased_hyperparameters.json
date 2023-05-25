@@ -469,11 +469,44 @@
       "num_heads": 3,
       "fanout": -1,
       "non_linear": true,
+      "learn_explainability": true,
+      "learn_method": "transr",
+      "learn_pop_sampling": false,
+      "embedding_type": "learned",
+      "graph_type": "aos"
+    }
+  },
+  "globalrla-lg": {
+    "phases": [
+      {
+        "tune": {
+          "graph_type": ["ao", "as", "s", "a", "os", "o", ""]
+        },
+        "fixed": {
+          "weight_decay": 0.001,
+          "learning_rate": 0.001,
+          "dropout": 0.2,
+          "review_aggregator": "narre",
+          "preference_module": "lightgcn",
+          "combiner": "concat",
+          "predictor": "dot",
+          "self_enhance_loss": false,
+          "node_dim": 64
+        }
+      }
+    ],
+    "default": {
+      "l2_weight": 0,
+      "num_neg_samples": 50,
+      "stemming": true,
+      "num_heads": 3,
+      "fanout": -1,
+      "non_linear": true,
       "learn_explainability": false,
       "learn_method": "transr",
       "learn_pop_sampling": false,
-      "embedding_type": "ao_embeddings",
-      "graph_type": "aos"
+      "learn_weight": 0.0,
+      "embedding_type": "learned"
     }
   },
   "kgat": {
