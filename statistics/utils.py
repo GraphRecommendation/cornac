@@ -145,7 +145,8 @@ def initialize_dataset(dataset):
 METHOD_NAMES = {'lightrla': 'LightRLA', 'narre': 'NARRE', 'hrdr': 'HRDR', 'kgat': 'KGAT', 'bpr': 'BPR',
              'trirank': 'TriRank', 'narre-bpr': 'NARRE_BPR', 'hrdr-bpr': 'HRDR_BPR', 'ngcf': 'ngcf',
              'lightgcn': 'lightgcn', 'light-e-cyclic': 'light-e-cyclic', 'globalrla': 'LightRLA',
-             'globalrla-e': 'LightRLA', 'globalrla-le': 'LightRLA', 'globalrla-l': 'LightRLA'}
+             'globalrla-e': 'LightRLA', 'globalrla-le': 'LightRLA', 'globalrla-l': 'LightRLA',
+                'globalrla-lg': 'LightRLA'}
 METHOD_REMATCH = {'narre-bpr': 'narre', 'hrdr-bpr': 'hrdr'}
 
 
@@ -154,12 +155,21 @@ def initialize_model(path, dataset, method, parameter_kwargs=None):
     dir_path = os.path.join(path, dataset, METHOD_REMATCH.get(method, method), name)
     df = pd.read_csv(os.path.join(dir_path, 'results.csv'), index_col=None)
 
-    if parameter_kwargs is not None:
-        for p, v in parameter_kwargs.items():
-            df = df[df[p] == v]
-
+    # Get best
     best_df = df[df.score == df.score.max()]
     data = best_df.loc[best_df.index[0]].to_dict()  # get results as row
+
+    if parameter_kwargs is not None:
+        # Either use best parameter values or args. Useful for ablation.
+        for p, v in data.items():
+            if p in parameter_kwargs:
+                df = df[df[p] == parameter_kwargs[p]]
+            else:
+                df = df[df[p] == v]
+
+        best_df = df[df.score == df.score.max()]
+        data = best_df.loc[best_df.index[0]].to_dict()
+
     file = data['file']
     with open(os.path.join(dir_path, file), 'rb') as f:
         model = pickle.load(f)

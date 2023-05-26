@@ -7,6 +7,7 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
+from copy import deepcopy
 
 from statistics.utils import METHOD_NAMES
 
@@ -45,7 +46,7 @@ def create_hyperparameter_dict(comb, model_parameters, shared_parameters, defaul
     return params
 
 
-def run(datasets, methods, tune_dataset, path='results'):
+def run(datasets, methods, tune_dataset, ablation_kwargs, path='results'):
     global GPUS
 
     methods_hyperparameters = json.load(open('multiphased_hyperparameters.json'))
@@ -81,20 +82,33 @@ def run(datasets, methods, tune_dataset, path='results'):
             df = pd.read_csv(save_dir)
             best_df = df[df.score == df.score.max()]
             b_param = best_df.iloc[0].to_dict()
-            for k, v in b_param.items():
-                if k in p_names:
-                    optimal_parameters[k] = v
-                elif k == 'layer_dropout' and 'dropout' in p_names:
-                    optimal_parameters['dropout'] = v
+
+            if len(map := ablation_kwargs.get(method, {})):
+                afix = map['fixed']
+                ablation_parameter, options = map['ablation']
+                b_param.update(afix)
+                iterator = [(ablation_parameter, option) for option in options]
+            else:
+                iterator = [(None, None)]
+
+            for ap, op in iterator:
+                for k, v in b_param.items():
+                    if k in p_names:
+                        optimal_parameters[k] = v
+                    elif k == 'layer_dropout' and 'dropout' in p_names:
+                        optimal_parameters['dropout'] = v
+                optimal_parameters['skip_tried'] = config.get('skip_tried', False)
+                optimal_parameters.update(shared_hyperparameters)
+
+                if method in ['lightrla-explain', 'light-e-cyclic']:
+                    method = 'lightrla'
+
+                if ap and op is not None:
+                    optimal_parameters[ap] = op
+
+                method_optimal_parameters[(method.replace('-bpr', ''), op)] = deepcopy(optimal_parameters)
         else:
             raise ValueError(f'Could not find results for', method, 'at the path: ', save_dir)
-
-        optimal_parameters['skip_tried'] = config.get('skip_tried', False)
-        optimal_parameters.update(shared_hyperparameters)
-        if method in ['lightrla-explain', 'light-e-cyclic']:
-            method = 'lightrla'
-
-        method_optimal_parameters[method.replace('-bpr', '')] = optimal_parameters
 
     combinations = list(method_optimal_parameters.items())
     combinations = [(d, m, p) for d in datasets for m, p in combinations]
@@ -110,7 +124,7 @@ def run(datasets, methods, tune_dataset, path='results'):
             if first:
                 # start process on each gpu. Zip ensures we do not iterate more than num gpus or combinations.
                 for _, gpu in list(zip(combinations, GPUS)):
-                    dataset, method, params = combinations.pop(0)
+                    dataset, (method, _), params = combinations.pop(0)
                     params.update({'index': index})
                     futures.append(e.submit(process_runner, dataset, method, params, gpu))
                 first = False
@@ -125,7 +139,7 @@ def run(datasets, methods, tune_dataset, path='results'):
                     if returncode != 0:
                         failed.append(pm)
 
-                    dataset, method, params = combinations.pop(0)
+                    dataset, (method, _), params = combinations.pop(0)
                     params.update({'index': index})
                     futures.append(e.submit(process_runner, dataset, method, params, gpu))
                 else:
@@ -145,4 +159,5 @@ def run(datasets, methods, tune_dataset, path='results'):
 if __name__ == '__main__':
     datasets = config['DATASETS'] if 'DATASETS' in config else [config['DATASET']]
     methods = config['METHODS'] if 'METHODS' in config else [config['METHOD']]
-    run(datasets, methods, 'cellphone')
+    ablation_kwargs = config['ABLATION']
+    run(datasets, methods, 'cellphone', ablation_kwargs)

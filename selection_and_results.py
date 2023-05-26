@@ -1,4 +1,7 @@
 import os, pickle, pandas as pd
+
+from copy import deepcopy
+
 import statistics
 import sys
 
@@ -7,7 +10,7 @@ from cornac.experiment import ExperimentResult
 from cornac.metrics import *
 
 
-def run(path, dataset, methods):
+def run(path, dataset, methods, method_ablation_dict=None):
     eval_method = statistics.utils.initialize_dataset(dataset)
 
     metrics = [NDCG(), NDCG(20), NDCG(100), AUC(), MAP(), MRR(), Recall(10), Recall(20), Precision(10), Precision(20)]
@@ -16,16 +19,34 @@ def run(path, dataset, methods):
     results = ExperimentResult()
     for method in methods:
         print(method)
-        model = statistics.utils.initialize_model(path, dataset, method)
+        if method_ablation_dict is not None and method in method_ablation_dict:
+            mad = method_ablation_dict[method]
+            fixed_parameters = mad['fixed']
+            ablation_parameter, options = mad['ablation']
+            iterator = []
+            for option in ablation_parameter:
+                p = deepcopy(fixed_parameters)
+                p[ablation_parameter] = option
+                iterator.append((model, p))
+        else:
+            iterator = [(method, None)]
 
-        model.train_set = eval_method.train_set
-        test_result = eval_method._eval(
-                model=model,
-                test_set=eval_method.test_set,
-                val_set=eval_method.val_set,
-                user_based=True,
-        )
-        results.append(test_result)
+        for model, parameters in iterator:
+            model = statistics.utils.initialize_model(path, dataset, method, parameter_kwargs=parameters)
+
+            model.train_set = eval_method.train_set
+            test_result = eval_method._eval(
+                    model=model,
+                    test_set=eval_method.test_set,
+                    val_set=eval_method.val_set,
+                    user_based=True,
+            )
+
+            # Is only not None if ablation parameters has been set.
+            if parameters is not None:
+                test_result.model_name += f'{ablation_parameter}_{parameters[ablation_parameter]}'
+
+            results.append(test_result)
 
     print(results)
 
