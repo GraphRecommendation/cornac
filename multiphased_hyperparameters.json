@@ -488,7 +488,6 @@
           "learning_rate": 0.001,
           "dropout": 0.2,
           "review_aggregator": "narre",
-          "preference_module": "lightgcn",
           "combiner": "concat",
           "predictor": "dot",
           "self_enhance_loss": false,
