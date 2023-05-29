@@ -60,7 +60,7 @@ def validate_hyperparameters(dictionary):
 
     example = info[0][0]
     for i, res in enumerate(info):
-        assert example == res[0], f'Hyperparameters for phase {i} does not match: {res[0]}'
+        assert example == res[0], f'Hyperparameters for phase {i} does not match: {example.difference(res[0])}/{res[0].difference(example)}'
         print(i, "Found combination lengths:", res[1])
 
 

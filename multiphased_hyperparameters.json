@@ -232,8 +232,8 @@
           "predictor": "dot",
           "self_enhance_loss": false,
           "learn_weight": 0,
-      "learn_explainability": false,
-      "graph_type": "aos",
+          "learn_explainability": false,
+          "graph_type": "aos",
           "node_dim": 64
         }
       },
@@ -258,17 +258,16 @@
           ],
           "self_enhance_loss": [
             true, false
-          ],
-          "learn_weight": [
-            0.1, 0.01, 0.5
           ]
         },
         "optimal": {
           "weight_decay": 1e-5,
           "learning_rate": 0.0001,
           "dropout": 0.2,
-      "graph_type": "aos",
-      "learn_explainability": false
+          "graph_type": "aos",
+          "learn_explainability": false,
+          "learn_weight": 0,
+          "node_dim": 64
         }
       },
       {
