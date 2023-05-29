@@ -83,6 +83,7 @@ def run(path, dataset, method, at, method_kwargs, negative_sampling=True):
     found = 0
     rankings = []
     n_rankings = []
+    nr_rankings = []
     mp_rankings = []
     with tqdm(list(eval_method.test_set.user_data.keys())) as progressbar:
         rsum = 0
@@ -154,6 +155,8 @@ def run(path, dataset, method, at, method_kwargs, negative_sampling=True):
                             matched.intersection_update(n)
 
                     matched = list(i for i in matched if i < len(eval_method.global_iid_map))
+                elif method == 'globalrla':
+                    pass
 
                 matched = [m for m in matched if m != iid and m not in rated]
                 ir = ranks[matched]
@@ -163,8 +166,11 @@ def run(path, dataset, method, at, method_kwargs, negative_sampling=True):
                 if len(ir) > 0:
                     if negative_sampling and len(matched):
                         neg_matched = _negative_selector(item_aos, i_aoss, len(s_aos))
-                        neg_matched = [m for m in neg_matched if m != iid and m not in rated]
-                        nir = ranks[neg_matched]
+                        neg_matched2 = [m for m in neg_matched if m != iid and m not in rated]
+                        nir = ranks[neg_matched2]
+                        neg_matched = _negative_selector(item_aos, i_aoss, len(s_aos), popularity_biased=False)
+                        neg_matched2 = [m for m in neg_matched if m != iid and m not in rated]
+                        nr_rankings.append((uid, iid, ranks[neg_matched2]))
 
                     rsum += sum(ir)
                     rlen += len(ir)
@@ -190,27 +196,30 @@ def run(path, dataset, method, at, method_kwargs, negative_sampling=True):
     rank_u = np.array([np.mean(r) for _, _, r in sorting_fn(rankings) if len(r)])
     rank_f = np.array([e for _, _, r in sorting_fn(rankings) for e in r])
 
-    quantiles_u = np.quantile(rank_u, [.01, .05, .1, .9, .95, .99])
-    quantiles_f = np.quantile(rank_f, [.01, .05, .1, .9, .95, .99])
+    qs = [.01, .05, .1, .5, .9, .95, .99]
+    print('qs: ', qs)
+    quantiles_u = np.quantile(rank_u, qs)
+    quantiles_f = np.quantile(rank_f, qs)
     print('uq: ', quantiles_u)
     print('fq: ', quantiles_f)
 
-    for other_rankings, name in zip([len(eval_method.global_iid_map) / 2, mp_rankings, n_rankings],
-                                    ['random', 'MostPop', 'negative']):
+    for other_rankings, name in zip([len(eval_method.global_iid_map) / 2, mp_rankings, n_rankings, nr_rankings],
+                                    ['random', 'MostPop', 'popular negative', 'random negative']):
         print('')
         print('-'*(6+len(name)+3))
         print(f'Name: {name}')
         ts_f = None
         if isinstance(other_rankings, list):
-            other_rankings_u = np.array([np.mean(r) for _, _, r in sorting_fn(other_rankings)])
-            quantiles_u = np.quantile(other_rankings_u, [.01, .05, .1, .9, .95, .99])
+            other_rankings_u, inner_r = np.array([[np.mean(r), r2] for (_, _, r), r2 in
+                                                  zip(sorting_fn(other_rankings), rank_u) if len(r)]).T
+            quantiles_u = np.quantile(other_rankings_u, qs)
             print('uq: ', quantiles_u)
-            ts_u, pu = stats.ttest_rel(rank_u, other_rankings_u, alternative='greater')
+            ts_u, pu = stats.ttest_rel(inner_r, other_rankings_u, alternative='greater')
 
             # negative sampling is not guaranteed to have same number of negative samples.
             if name == 'MostPop':
                 other_rankings_f = np.array([e for _, _, r in sorting_fn(other_rankings) for e in r])
-                quantiles_f = np.quantile(other_rankings_f, [.01, .05, .1, .9, .95, .99])
+                quantiles_f = np.quantile(other_rankings_f, qs)
                 print('fq: ', quantiles_f)
                 ts_f, pf = stats.ttest_rel(rank_f, other_rankings_f, alternative='greater')
 

@@ -265,7 +265,7 @@ def _create_edge_wrapper(weighting, kwargs):
 
 
 def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology='weighted', weighting='attention',
-                    aggregator=np.mean):
+                    aggregator=np.mean, draw=False):
     aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos, a2a, o2o, user_sent_edge_map, item_sent_edge_map = \
         generate_mappings(eval_method.sentiment, match, get_ao_mappings=True, get_sent_edge_mappings=True)  # Get mappings
     e_length = len(edges)
@@ -399,7 +399,7 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
     user, _ = next(iter(edges[max(edges)]))
 
     flag = eval_method.test_set.csr_matrix[user-eval_method.train_set.num_items, item] >=4 and e_length == 2
-    if flag:
+    if flag and draw:
         labels = {}
         aspect_name = {v: k for k, v in eval_method.sentiment.aspect_id_map.items()}
         opinion_name = {v: k for k, v in eval_method.sentiment.opinion_id_map.items()}

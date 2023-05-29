@@ -17,7 +17,7 @@ parser.add_argument('--method_kwargs', default="{'matching_method':'a'}", type=s
 
 
 def run(path, dataset, method, method_kwargs, draw=False, rerun=False):
-    from statistics import utils, lightrla_graph_overlap2 as lightrla_graph_overlap, narre_graph_overlap, kgat_graph_overlap
+    from statistics import utils, lightrla_graph_overlap, narre_graph_overlap, kgat_graph_overlap
     # Get dataset and model
     eval_method = utils.initialize_dataset(dataset)
     model = utils.initialize_model(path, dataset, method)
