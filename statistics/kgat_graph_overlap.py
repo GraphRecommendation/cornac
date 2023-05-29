@@ -61,7 +61,7 @@ def get_path(eval_method, uid, iid, g, g_simple, num_nodes, path_limit=None):
     return edges
 
 
-def get_reviews(eval_method, model, lightrla_data, path_methodology='lightrla'):
+def get_reviews(eval_method, model, lightrla_data, path_methodology):
     g = model.train_graph.to_networkx()
     attention = model.train_graph.edata['a']
     attention = {e: 1-v for e, v in zip(g.edges, attention.numpy())}  # attention is inversed so lower is better
@@ -80,7 +80,7 @@ def get_reviews(eval_method, model, lightrla_data, path_methodology='lightrla'):
         # E.g. same as our method or same as train graphs
         if path_methodology == 'lightrla':
             num_nodes = lrla_g.number_of_nodes()
-        elif path_methodology == 'median':
+        elif path_methodology == 'mean':
             num_nodes = m_length
         else:
             raise NotImplementedError

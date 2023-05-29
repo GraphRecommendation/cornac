@@ -5,6 +5,7 @@ from collections import OrderedDict, defaultdict
 
 import numpy as np
 import pandas as pd
+from copy import deepcopy
 
 from cornac.utils.graph_construction import generate_mappings
 from statistics import utils
@@ -14,9 +15,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--datasets', nargs='+')
 parser.add_argument('--methods', nargs='+')
 parser.add_argument('--data_path', type=str)
-parser.add_argument('--matching_methodology', type=str)
-parser.add_argument('--file_args', default='', type=str)
-
+parser.add_argument('--method_kwargs', default="{'matching_method':'a'}", type=str)
 
 def extract_test_nodes(df, eval_method, match):
     aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos, a_mapping, o_mapping\
@@ -61,6 +60,23 @@ def _jaccard_index(s1, s2):
     i = len(s1.intersection(s2))
     return i / (len(s1) + len(s2) + i)
 
+def _precision(s1, s2):
+    tp = len(s1.intersection(s2))
+    tpfp = len(s1)
+    return tp / tpfp
+
+
+def _recall(s1, s2):
+    tp = len(s1.intersection(s2))
+    tpfn = len(s2)
+    return tp / tpfn
+
+
+def _f1(s1, s2):
+    tp = len(s1.intersection(s2))
+    tpfpfn = len(s1) + len(s2)
+    return 2*tp / tpfpfn
+
 
 def statistics(eval_method, ui_nodes, data):
     results = defaultdict(list)
@@ -80,6 +96,11 @@ def statistics(eval_method, ui_nodes, data):
         results['tanimoto-coefficient'].append(_tversky_index(pred_nodes, target_nodes))
         results['overlap-coefficient'].append(_overlap_coefficient(pred_nodes, target_nodes))
         results['jaccard-index'].append(_jaccard_index(pred_nodes, target_nodes))
+        results['precision'].append(_precision(pred_nodes, target_nodes))
+        results['recall'].append(_recall(pred_nodes, target_nodes))
+        results['f1'].append(_f1(pred_nodes, target_nodes))
+        results['num'].append(len(pred_nodes))
+        results['actual'].append(len(target_nodes))
         selected_nodes.update(pred_nodes.difference({inner_uid, iid}))
 
     results['diversity'] = len(selected_nodes) / m
@@ -109,27 +130,36 @@ def aggregate_metrics(results):
     return aggregated_results
 
 
-def run(datasets, methods, data_path='experiment/seer-ijcai2020/', matching_methodology='a', file_args=''):
+def run(datasets, methods, data_path, method_kwargs):
     all_results = defaultdict(dict)
+    method_kwargs = eval(method_kwargs)
     mask = None
     ui_pairs = None
     base_path = 'statistics/output/'
-    method_kwargs = {'kgat': {}, 'globalrla': {'methodology': file_args,'weighting':'attention'}, 'matching_method': matching_methodology}
+    matching_methodology = method_kwargs['matching_method']
     for dataset in datasets:
         print(f'----{dataset}----')
         all_results[dataset] = {}
         eval_method = utils.initialize_dataset(dataset)
         df = pd.read_csv(os.path.join('experiment', 'seer-ijcai2020', dataset, 'profile.csv'), sep=',')
-        ui_nodes = extract_test_nodes(df, eval_method, matching_methodology)
+        ui_nodes = extract_test_nodes(df, eval_method, method_kwargs['matching_method'])
 
         for method in methods:
-            review_fname, graph_fname = get_method_paths(method_kwargs, dataset, method)
+            if method == 'kgat':
+                iterator = [('path_methodology', 'lightrla'), ('path_methodology', 'mean')]
+            else:
+                iterator = [('methodology', 'item'), ('methodology', 'greedy_item'), ('methodology', 'greedy_user')
+                            , ('methodology', 'weighted')]
 
-            # Load
-            with open(graph_fname, 'rb') as f:
-                data = pickle.load(f)
+            for k, v in iterator:
+                method_kwargs[method][k] = v
+                review_fname, graph_fname = get_method_paths(method_kwargs, dataset, method)
 
-            all_results[dataset][method] = statistics(eval_method, ui_nodes, data)
+                # Load
+                with open(graph_fname, 'rb') as f:
+                    data = pickle.load(f)
+
+                all_results[dataset][method + f'{k}_{v}'] = statistics(eval_method, ui_nodes, data)
 
     o_fname = os.path.join(base_path, f'graph_scores_{"_".join(datasets)}_{"_".join(methods)}_{matching_methodology}'
                                       f'.pickle')

@@ -31,7 +31,7 @@ def run(path, dataset, method, method_kwargs, draw=False, rerun=False):
     uig = None
     if (not os.path.isfile(review_fname) or rerun) and method not in ['kgat']:
         for user, item in tqdm(list(zip(*eval_method.test_set.csr_matrix.nonzero()))):
-            if method in ['lightrla', 'globalrla', 'globalrla-e']:
+            if method in ['lightrla'] or method.startswith('globalrla'):
                 r = reverse_path(eval_method, user, item, matching_method)
                 # TODO fix, should not be none or better handling
                 if r is None:
@@ -62,12 +62,12 @@ def run(path, dataset, method, method_kwargs, draw=False, rerun=False):
     if method in ['lightrla', 'globalrla']:
         uig = lightrla_graph_overlap.sid_to_graphs(eval_method, uis, matching_method)
     elif method == 'kgat':
-        _, lightrla_fname = get_method_paths(method_kwargs, dataset, 'lightrla')
+        _, lightrla_fname = get_method_paths(method_kwargs, dataset, 'globalrla')
         assert os.path.isfile(lightrla_fname), 'This method can be dependant on LightRLA (for fair comparison). ' \
                                                'Please run with lightrla before kgat.'
 
         lightrla_data = kgat_graph_overlap.load_data(lightrla_fname)
-        uig = kgat_graph_overlap.get_reviews(eval_method, model, lightrla_data)
+        uig = kgat_graph_overlap.get_reviews(eval_method, model, lightrla_data, **method_kwargs[method])
 
     if uig is not None:
         with open(graph_fname, 'wb') as f:
