@@ -64,7 +64,7 @@ def validate_hyperparameters(dictionary):
         print(i, "Found combination lengths:", res[1])
 
 
-def run(dataset, method, path='results'):
+def run(dataset, method, phases, path='results'):
     global GPUS
 
     methods_hyperparameters = json.load(open('multiphased_hyperparameters.json'))
@@ -88,7 +88,10 @@ def run(dataset, method, path='results'):
         default_parameters['use_bpr'] = True
 
     failed = []
-    for phase_parameters in method_dict['phases']:
+    for i, phase_parameters in enumerate(method_dict['phases']):
+        if phases is not None and i not in phases:
+            continue
+
         parameters = phase_parameters['tune']
         fixed_parameters = phase_parameters.get('fixed', {})
         optimal_parameters = phase_parameters.get('optimal', {})
@@ -167,9 +170,10 @@ def run(dataset, method, path='results'):
 if __name__ == '__main__':
     datasets = config['DATASETS'] if 'DATASETS' in config else [config['DATASET']]
     methods = config['METHODS'] if 'METHODS' in config else [config['METHOD']]
+    phases = config.get('PHASES')
     for dataset in datasets:
 
         print('----', dataset, '----')
         for method in methods:
             print('--', method, '--')
-            run(dataset, method)
+            run(dataset, method, phases)

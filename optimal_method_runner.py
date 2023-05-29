@@ -103,7 +103,7 @@ def run(datasets, methods, tune_dataset, ablation_kwargs, path='results'):
                 if method in ['lightrla-explain', 'light-e-cyclic']:
                     method = 'lightrla'
 
-                if ap and op is not None:
+                if ap is not None and op is not None:
                     optimal_parameters[ap] = op
 
                 method_optimal_parameters[(method.replace('-bpr', ''), op)] = deepcopy(optimal_parameters)

@@ -285,7 +285,7 @@ def run(in_kwargs, dataset, method, save_dir='.'):
         path = os.path.join(save_dir, model.name, 'results.csv')
         if os.path.isfile(path):
             df = pd.read_csv(path)
-            columns = [c for c in df.columns if c in in_kwargs]
+            columns = [c for c in df.columns if c in in_kwargs and c not in ['id', 'index']]
             values = [in_kwargs.get(c) for c in columns]
             df = df[columns]  # ensure ordering and ignore e.g. score
             if (df == values).all(1).any():
