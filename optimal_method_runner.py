@@ -84,7 +84,7 @@ def run(datasets, methods, tune_dataset, ablation_kwargs, path='results'):
             b_param = best_df.iloc[0].to_dict()
 
             if len(map := ablation_kwargs.get(method, {})):
-                afix = map['fixed']
+                afix = map.get('fixed', {})
                 ablation_parameter, options = map['ablation']
                 b_param.update(afix)
                 iterator = [(ablation_parameter, option) for option in options]

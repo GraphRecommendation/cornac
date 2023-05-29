@@ -2,12 +2,21 @@ import os, pickle, pandas as pd
 
 from copy import deepcopy
 
+import argparse
+
 import statistics
 import sys
 
 from cornac.experiment import ExperimentResult
 
 from cornac.metrics import *
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument('path', type=str)
+parser.add_argument('dataset')
+parser.add_argument('methods', nargs='+')
+parser.add_argument('--method_ablation_dict', default="None", type=str)
 
 
 def run(path, dataset, methods, method_ablation_dict=None):
@@ -21,13 +30,13 @@ def run(path, dataset, methods, method_ablation_dict=None):
         print(method)
         if method_ablation_dict is not None and method in method_ablation_dict:
             mad = method_ablation_dict[method]
-            fixed_parameters = mad['fixed']
+            fixed_parameters = mad.get('fixed', {})
             ablation_parameter, options = mad['ablation']
             iterator = []
-            for option in ablation_parameter:
+            for option in options:
                 p = deepcopy(fixed_parameters)
                 p[ablation_parameter] = option
-                iterator.append((model, p))
+                iterator.append(tuple((method, p)))
         else:
             iterator = [(method, None)]
 
@@ -44,7 +53,7 @@ def run(path, dataset, methods, method_ablation_dict=None):
 
             # Is only not None if ablation parameters has been set.
             if parameters is not None:
-                test_result.model_name += f'{ablation_parameter}_{parameters[ablation_parameter]}'
+                test_result.model_name += f'_{ablation_parameter}_{parameters[ablation_parameter]}'
 
             results.append(test_result)
 
@@ -55,6 +64,6 @@ def run(path, dataset, methods, method_ablation_dict=None):
 
 
 if __name__ == '__main__':
-    path, dataset = sys.argv[1:3]
-    methods = sys.argv[3:]
-    run(path, dataset, methods)
+    args = parser.parse_args()
+    method_kwargs = eval(args.method_ablation_dict)
+    run(args.path, args.dataset, args.methods, method_ablation_dict=method_kwargs)

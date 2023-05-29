@@ -447,14 +447,14 @@
     "phases": [
       {
         "tune": {
-          "learn_weight": [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 1.0, 5.0]
+          "learn_weight": [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 1.0, 5.0],
+          "preference_module": ["mf", "lightgcn"]
         },
         "fixed": {
           "weight_decay": 0.001,
           "learning_rate": 0.001,
           "dropout": 0.2,
           "review_aggregator": "narre",
-          "preference_module": "mf",
           "combiner": "concat",
           "predictor": "dot",
           "self_enhance_loss": false,

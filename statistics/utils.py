@@ -3,6 +3,7 @@ import pickle
 from functools import reduce
 
 import pandas as pd
+from copy import deepcopy
 
 from cornac.eval_methods import StratifiedSplit
 
@@ -160,14 +161,18 @@ def initialize_model(path, dataset, method, parameter_kwargs=None):
     data = best_df.loc[best_df.index[0]].to_dict()  # get results as row
 
     if parameter_kwargs is not None:
+        df_p = deepcopy(df)
         # Either use best parameter values or args. Useful for ablation.
         for p, v in data.items():
             if p in parameter_kwargs:
-                df = df[df[p] == parameter_kwargs[p]]
-            else:
-                df = df[df[p] == v]
+                df_p = df_p[df_p[p] == parameter_kwargs[p]]
+            elif p == 'learn_weight' and not data.get(['learn_explainability'], False): # hotfix
+                continue
+            elif p not in ['file', 'id', 'index', 'epoch', 'score']:
+                df_p = df_p[df_p[p] == v]
 
-        best_df = df[df.score == df.score.max()]
+
+        best_df = df_p[df_p.score == df_p.score.max()]
         data = best_df.loc[best_df.index[0]].to_dict()
 
     file = data['file']
