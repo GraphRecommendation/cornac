@@ -551,10 +551,14 @@ class Model(nn.Module):
                 mask = nodes >= filter_val
                 emb = torch.empty((*nodes.size(), self.node_dim), device=nodes.device)
                 emb[~mask] = self.node_embedding(nodes[~mask])
-                emb[mask] = self.node_embedding_mlp(self.learned_embeddings[nodes[mask]-filter_val])
+                if torch.any(mask):
+                    emb[mask] = self.node_embedding_mlp(self.learned_embeddings[nodes[mask]-filter_val])
                 return emb
             else:
-                return torch.cat([self.node_embedding.weight, self.node_embedding_mlp(self.learned_embeddings)], dim=0)
+                if len(self.learned_embeddings):
+                    return torch.cat([self.node_embedding.weight, self.node_embedding_mlp(self.learned_embeddings)], dim=0)
+                else:
+                    return self.node_embedding.weight
         else:
             raise ValueError(f'Does not support {self.embedding_type}')
 

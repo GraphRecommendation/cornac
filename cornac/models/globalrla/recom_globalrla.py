@@ -462,8 +462,11 @@ class GlobalRLA(Recommender):
             if 'o' in self.graph_type:
                 emb.append(o_embs)
 
-            kwargs['ao_embeddings'] = torch.cat(emb).to(self.device).to(torch.float32)
-            n_nodes -= kwargs['ao_embeddings'].size(0)
+            if len(emb):
+                kwargs['ao_embeddings'] = torch.cat(emb).to(self.device).to(torch.float32)
+                n_nodes -= kwargs['ao_embeddings'].size(0)
+            else:
+                kwargs['ao_embeddings'] = torch.zeros((0, 0))
 
         if not self.use_relation:
             self.n_relations = 0
@@ -480,7 +483,6 @@ class GlobalRLA(Recommender):
                            aos_predictor=self.learn_method, non_linear=self.non_linear,
                            embedding_type=self.embedding_type, hypergraph_attention=self.hypergraph_attention,
                            **kwargs)
-
 
         self.model.reset_parameters()
 
