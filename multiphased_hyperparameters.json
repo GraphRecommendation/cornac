@@ -329,8 +329,6 @@
           "dropout": 0.2,
           "predictor": "dot",
           "self_enhance_loss": false,
-          "learn_explainability": false,
-          "learn_weight": 0,
           "node_dim": 64
         }
       }
