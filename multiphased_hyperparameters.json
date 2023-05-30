@@ -318,7 +318,6 @@
           "preference_module": ["mf", "lightgcn"]
         },
         "optimal": {
-          "preference_module": "lightgcn",
           "review_aggregator": "narre",
           "combiner": "concat",
           "weight_decay": 1e-5,
