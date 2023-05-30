@@ -317,6 +317,10 @@
           "graph_type": ["aos", "ao", "a", "as", "o", "os", "n", "s"],
           "preference_module": ["mf", "lightgcn"]
         },
+        "fixed": {
+          "learn_explainability": false,
+          "learn_weight": 0.0
+        },
         "optimal": {
           "review_aggregator": "narre",
           "combiner": "concat",
