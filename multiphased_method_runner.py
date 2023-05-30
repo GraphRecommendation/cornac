@@ -49,10 +49,14 @@ def create_hyperparameter_dict(comb, model_parameters, shared_parameters, defaul
 
 def validate_hyperparameters(dictionary):
     info = []
-    for pp in dictionary['phases']:
+    for i, pp in enumerate(dictionary['phases']):
         arguments = set()
         for k, v in pp.items():
-            arguments.update(list(v.keys()))
+            s = set(v.keys())
+            assert len(s.intersection(arguments)) == 0, f'Phase {i}. ' \
+                                                        f'Parameters intersect with {s.intersection(arguments)}.'
+            assert len(s) == len(v), f'Phase {i}. Same args occur in {list(v.keys())}'
+            arguments.update(s)
 
         values = list(pp.get('tune', {}).values())
         n = len(list(itertools.product(*values)))
