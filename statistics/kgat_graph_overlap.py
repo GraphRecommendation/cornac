@@ -23,23 +23,28 @@ def get_path(inner_uid, iid, g, g_simple, num_nodes, path_limit=None):
     # Get only paths using the shortest path length.
     # Max path length is three as the graph shown in figure 4 in the
     # KGAT paper: https://arxiv.org/pdf/1905.07854.pdf
-    # max_length = max(nx.shortest_path_length(g, inner_uid, iid), 3)
-    # paths = list(nx.all_simple_paths(g_simple, inner_uid, iid, max_length))
+    max_length = max(nx.shortest_path_length(g, inner_uid, iid), 3)
+    paths = list(nx.all_simple_paths(g_simple, inner_uid, iid, max_length))
 
     # weight paths
-    # p_w = {}
-    # for i, p in enumerate(paths):
-    #     p_w[i] = nx.path_weight(g, p, weight='a') / len(p)  # Longer paths are not better
+    p_w = {}
+    for i, p in enumerate(paths):
+        p_w[i] = nx.path_weight(g, p, weight='a') / len(p)  # Longer paths are not better
 
-    shortests_paths = nx.all_shortest_paths(g, inner_uid, iid, weight='a')
+    # shortests_paths = nx.all_shortest_paths(g, inner_uid, iid, weight='a')
 
     index = -1
     node_set = set()
-    paths = []  # sort according to weight
-    while len(node_set) < num_nodes and (next_path := next(shortests_paths, None)) is not None:
+    # paths = []  # sort according to weight
+    paths = [p for _, p in sorted(enumerate(paths), key=lambda x: p_w[x[0]])]  # sort according to weight
+
+    # while len(node_set) < num_nodes and (next_path := next(shortests_paths, None)) is not None:
+    while len(node_set) < num_nodes and index+1 < len(paths):
         index += 1
-        node_set.update(next_path)
-        paths.append(next_path)
+        node_set.update(paths[index])
+
+        # node_set.update(next_path)
+        # paths.append(next_path)
         if path_limit is not None and index + 1 >= path_limit:
             break
 
