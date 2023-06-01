@@ -96,7 +96,7 @@ def get_reviews(eval_method, model, lightrla_data, path_methodology):
     uig = []
     futures =[]
     with ProcessPoolExecutor(max_workers=3) as ppe:
-        bz = 100
+        bz = 10
         for ndx in range(0, len(lightrla_data), bz):
             batch = lightrla_data[ndx:ndx + bz]
             users, items, graphs = zip(*batch)

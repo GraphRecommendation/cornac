@@ -19,9 +19,10 @@ parser.add_argument('--method_kwargs', default="{'matching_method':'a'}", type=s
 parser.add_argument('--parameter_kwargs', default="{}", type=str)
 
 parameter_list = [
+    {'learn_explainability': False, 'graph_type': 'aos', 'learn_weight': 0.0},
     {'learn_explainability': True, 'learn_weight': 0.05},
     {'learn_explainability': True, 'learn_weight': 0.1},
-    # {'learn_explainability': False, 'graph_type': 'a'},
+    {'learn_explainability': False, 'graph_type': 'ao'}
     # {'learn_explainability': False, 'graph_type': 'o'},
     # {'learn_explainability': False, 'graph_type': 's'},
 ]
@@ -98,8 +99,10 @@ if __name__ == '__main__':
     method_kwargs = eval(args.method_kwargs)
     parameter_kwargs = eval(args.parameter_kwargs)
 
-    if args.method.startswith('global') and parameter_kwargs.get(args.method) is not None \
-            and method_kwargs[args.method]['methodology'] == 'greedy_item':
+    if args.method.startswith('global'):
+        if method_kwargs[args.method]['methodology'] != 'greedy_item' and args.dataset != 'cellphone':
+            parameter_list = parameter_list[:1]
+
         for para in parameter_list:
             parameter_kwargs[args.method] = para
             run(args.path, args.dataset, args.method, rerun=args.rerun, method_kwargs=method_kwargs,

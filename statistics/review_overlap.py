@@ -287,14 +287,17 @@ def run(dataset, methods, data_path='experiment/seer-ijcai2020/', method_kwargs=
                 for methodology in method_kwargs[method].pop('methodologies'):
                     method_kwargs[method]['methodology'] = methodology
                     print(f'--{method}-{methodology}--')
-                    if methodology == 'greedy_item':
-                        for para in parameter_list:
-                            name = method + f'-{methodology}' + '-'.join([f'{k}-{v}' for k, v in para.items()])
-                            all_results[dataset][name], ui_pairs = \
-                                _get_statistics(eval_method, dataset, method, method_kwargs, para, ui_review, mask, ui_pairs)
+                    if methodology != 'greedy_item':
+                        idx = 1
+                    else:
+                        idx = -1
+                    for para in parameter_list[:idx]:
+                        name = method + f'-{methodology}' + '-'.join([f'{k}-{v}' for k, v in para.items()])
+                        all_results[dataset][name], ui_pairs = \
+                            _get_statistics(eval_method, dataset, method, method_kwargs, para, ui_review, mask, ui_pairs)
 
-                    all_results[dataset][method+ f'-{methodology}'], ui_pairs = \
-                        _get_statistics(eval_method, dataset, method, method_kwargs, None, ui_review, mask, ui_pairs)
+                    # all_results[dataset][method+ f'-{methodology}'], ui_pairs = \
+                    #     _get_statistics(eval_method, dataset, method, method_kwargs, None, ui_review, mask, ui_pairs)
             else:
                 print(f'--{method}--')
                 all_results[dataset][method], ui_pairs = _get_statistics(eval_method, dataset, method, method_kwargs,
