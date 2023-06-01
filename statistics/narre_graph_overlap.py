@@ -1,9 +1,9 @@
 import numpy as np
 
-from cornac.models.narre import narre_helper
 
 
 def get_reviews(eval_method, model, match):
+    from cornac.models.narre import narre_helper
     mnr = model.max_num_review
     reviews = np.zeros((eval_method.train_set.num_items, mnr))
     ui_rid = {}
