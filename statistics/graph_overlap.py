@@ -9,13 +9,15 @@ from copy import deepcopy
 
 from cornac.utils.graph_construction import generate_mappings
 from statistics import utils
+from statistics.method_graph_overlap import parameter_list
+from statistics.review_overlap import latex_table
 from statistics.utils import id_mapping, get_method_paths
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--datasets', nargs='+')
 parser.add_argument('--methods', nargs='+')
-parser.add_argument('--data_path', type=str)
 parser.add_argument('--method_kwargs', default="{'matching_method':'a'}", type=str)
+parser.add_argument('--parameter_kwargs', default="{}", type=str)
 
 def extract_test_nodes(df, eval_method, match):
     aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos, a_mapping, o_mapping\
@@ -130,11 +132,10 @@ def aggregate_metrics(results):
     return aggregated_results
 
 
-def run(datasets, methods, data_path, method_kwargs):
+def run(datasets, methods, method_kwargs, parameter_kwargs):
     all_results = defaultdict(dict)
     method_kwargs = eval(method_kwargs)
-    mask = None
-    ui_pairs = None
+    parameter_kwargs = eval(parameter_kwargs)
     base_path = 'statistics/output/'
     matching_methodology = method_kwargs['matching_method']
     for dataset in datasets:
@@ -146,34 +147,47 @@ def run(datasets, methods, data_path, method_kwargs):
 
         for method in methods:
             if method == 'kgat':
-                iterator = [('path_methodology', 'lightrla'), ('path_methodology', 'mean')]
+                iterator = [('path_methodology', 'lightrla')] #, ('path_methodology', 'mean')]
             else:
                 iterator = [('methodology', 'item'), ('methodology', 'greedy_item'), ('methodology', 'greedy_user')
                             , ('methodology', 'weighted')]
+                # iterator = [('methodology', 'greedy_item')]
 
             for k, v in iterator:
-                method_kwargs[method][k] = v
-                review_fname, graph_fname = get_method_paths(method_kwargs, dataset, method)
+                if method.startswith('global') and v == 'greedy_item':
+                    it = parameter_list + [None]
+                else:
+                    it = [None]
 
-                # Load
-                with open(graph_fname, 'rb') as f:
-                    data = pickle.load(f)
+                for para in it:
+                    print(f'--{method}-{v}-{para}')
+                    method_kwargs[method][k] = v
+                    review_fname, graph_fname = get_method_paths(method_kwargs, para,
+                                                                 dataset, method)
 
-                all_results[dataset][method + f'{k}_{v}'] = statistics(eval_method, ui_nodes, data)
+                    # Load
+                    with open(graph_fname, 'rb') as f:
+                        data = pickle.load(f)
+
+                    name = method + f'{k}_{v}'
+                    if para is not None:
+                        name += '' '_'.join({f'{p}_{va}' for p, va in para.items()})
+
+                    all_results[dataset][name] = statistics(eval_method, ui_nodes, data)
 
     o_fname = os.path.join(base_path, f'graph_scores_{"_".join(datasets)}_{"_".join(methods)}_{matching_methodology}'
                                       f'.pickle')
     with open(o_fname, 'wb') as f:
         pickle.dump(all_results, f)
 
-    all_results = aggregate_metrics(all_results)
+    agg_results = aggregate_metrics(all_results)
     o_fname = os.path.join(base_path, f'graph_scores_{"_".join(datasets)}_{"_".join(methods)}_{matching_methodology}'
                                       f'_aggregated.pickle')
     with open(o_fname, 'wb') as f:
-        pickle.dump(all_results, f)
+        pickle.dump(agg_results, f)
 
     data2 = defaultdict(list)
-    for dataset, method_res in all_results.items():
+    for dataset, method_res in agg_results.items():
         for method, res in method_res.items():
             for metric, r in res.items():
                 data2[dataset].append(r)
@@ -181,9 +195,15 @@ def run(datasets, methods, data_path, method_kwargs):
                 data2['metric'].append(metric)
 
     df2 = pd.DataFrame(data2)
-    df3 = df2.set_index('method').pivot(columns='metric').rename_axis(None, axis=0)
-    print(df3)
-    df3.to_csv(o_fname.replace('.pickle','.csv'))
+    df = df2.set_index('method').pivot(columns='metric').rename_axis(None, axis=0)
+    df.to_csv(o_fname.replace('.pickle','.csv'))
+    df.columns = df.columns.get_level_values(1)
+    columns = [c for c in df.columns if c.endswith('avg') or c.startswith('div')]
+
+    df = df[columns]
+    df.columns = [c.replace('-avg', '') for c in df.columns]
+
+    latex_table(df, all_results, dataset)
 
 
 if __name__ == '__main__':

@@ -2,6 +2,7 @@ import inspect
 import itertools
 import math
 import re
+import time
 from collections import defaultdict, OrderedDict
 from functools import lru_cache
 
@@ -264,15 +265,12 @@ def _create_edge_wrapper(weighting, kwargs):
     return func(**kwargs)
 
 
-def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology='weighted', weighting='attention',
-                    aggregator=np.mean, draw=False):
+def get_data(eval_method, match, model, hackjob):
     aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos, a2a, o2o, user_sent_edge_map, item_sent_edge_map = \
-        generate_mappings(eval_method.sentiment, match, get_ao_mappings=True, get_sent_edge_mappings=True)  # Get mappings
-    e_length = len(edges)
+    generate_mappings(eval_method.sentiment, match, get_ao_mappings=True, get_sent_edge_mappings=True)  # Get mappings
     n_items = eval_method.train_set.num_items
     n_users = eval_method.train_set.num_users
     n_aspects = max(a2a.values()) + 1
-    n_opinions = max(o2o.values()) + 1
     n_users_items = n_items + n_users
 
     sid_aos = []
@@ -284,13 +282,22 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
     aos_list = sorted({aos for aoss in sid_aos for aos in aoss})
     aos_id = {aos: i for i, aos in enumerate(aos_list)}
     sid_aos = [torch.LongTensor([aos_id[aos] for aos in aoss]) for aoss in sid_aos]
-
     # Get review attention.
     if hackjob:
         with torch.no_grad():
             attention = extract_attention(model.model, model.node_review_graph, model.device).cpu().numpy()
     else:
         raise NotImplementedError
+
+    return {'usem': user_sent_edge_map, 'isem': item_sent_edge_map, 'a': attention, 'sa': sid_aos, 'aosl': aos_list,
+             'ni': n_items, 'as': aos_sent}
+
+def get_reviews_nwx(eval_method, model, edges, match, methodology='weighted', weighting='attention',
+                    aggregator=np.mean, draw=False, **kwargs):
+
+    user_sent_edge_map, item_sent_edge_map, attention, sid_aos, aos_list, n_items, aos_sent = \
+        (kwargs[k] for k in ['usem', 'isem', 'a', 'sa', 'aosl', 'ni', 'as'])
+    e_length = len(edges)
 
     # No solution when no edges were found.
     if edges is None:
@@ -301,7 +308,6 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
     # Construct nx graph
     # goes backwards
     data = []
-
     edges_kwargs = {'eval_method': eval_method, 'match': match, 'agg': aggregator}
     if weighting == 'attention':
         edges_kwargs.update({'usem': user_sent_edge_map, 'isem': item_sent_edge_map, 'atts': attention})
@@ -342,7 +348,6 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
 
     # assign weights and edge identifiers
     # if attention use attention, if similarity, assign user similarity as weight
-
     # create graph
     g = nx.MultiGraph()
     g.add_edges_from(data)
@@ -400,6 +405,8 @@ def get_reviews_nwx(eval_method, model, edges, match, hackjob=True, methodology=
 
     flag = eval_method.test_set.csr_matrix[user-eval_method.train_set.num_items, item] >=4 and e_length == 2
     if flag and draw:
+        aos_user, aos_item, aos_sent, user_aos, item_aos, sent_aos, a2a, o2o, user_sent_edge_map, item_sent_edge_map = \
+            generate_mappings(eval_method.sentiment, match, get_ao_mappings=True, get_sent_edge_mappings=True)
         labels = {}
         aspect_name = {v: k for k, v in eval_method.sentiment.aspect_id_map.items()}
         opinion_name = {v: k for k, v in eval_method.sentiment.opinion_id_map.items()}

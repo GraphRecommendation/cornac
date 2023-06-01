@@ -61,9 +61,12 @@ def run(path, dataset, method, at, method_kwargs, negative_sampling=True):
     random.seed(eval_method.seed)
     model = utils.initialize_model(path, dataset, method)
     matching_method = method_kwargs['matching_method']
-    review_fname, graph_fname = utils.get_method_paths(method_kwargs, dataset, method)
+    review_fname, graph_fname = utils.get_method_paths(method_kwargs, None, dataset, method)
     aos_user, aos_item, _, user_aos, item_aos, sent_aos, a_mapping, o_mapping = \
         generate_mappings(eval_method.sentiment, matching_method, get_ao_mappings=True)
+
+    if method.startswith('global'):
+        global_kwargs = lightrla_graph_overlap.get_data(eval_method, matching_method, model, True)
 
     # rid_sid = {rid: eval_method.sentiment.user_sentiment[uid][iid]
     #            for uid, irid in eval_method.review_text.user_review.items()
@@ -127,14 +130,14 @@ def run(path, dataset, method, at, method_kwargs, negative_sampling=True):
             ranks = sorting.argsort()
             top_k = sorting[-at:]
             for iid in top_k:
-                if method == 'lightrla':
+                if method == 'lightrla' or method.startswith('global'):
                     r = lightrla_graph_overlap.reverse_path(eval_method, uid, iid, matching_method)
 
                     if r is None:
                         continue
 
                     sids = lightrla_graph_overlap.get_reviews_nwx(eval_method, model, r, matching_method,
-                                                                  **method_kwargs[method])
+                                                                  **method_kwargs[method], **global_kwargs)
 
                     s_aos = set(sent_aos[sids[-1]])
                     # s_aos = set(a for s in sids[-1:] for a in sent_aos[s])
@@ -155,8 +158,6 @@ def run(path, dataset, method, at, method_kwargs, negative_sampling=True):
                             matched.intersection_update(n)
 
                     matched = list(i for i in matched if i < len(eval_method.global_iid_map))
-                elif method == 'globalrla':
-                    pass
 
                 matched = [m for m in matched if m != iid and m not in rated]
                 ir = ranks[matched]

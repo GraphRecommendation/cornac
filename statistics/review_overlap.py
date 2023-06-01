@@ -17,6 +17,7 @@ from scipy.stats import ttest_ind, ttest_rel
 from tqdm import tqdm
 
 from statistics import utils
+from statistics.method_graph_overlap import parameter_list
 from statistics.utils import get_method_paths
 
 parser = argparse.ArgumentParser()
@@ -225,8 +226,8 @@ def extract_test_reviews(df, eval_method):
     return ui_review
 
 
-def _get_statistics(eval_method, dataset, method, method_kwargs, ui_review, mask, ui_pairs=None):
-    review_fname, graph_fname = get_method_paths(method_kwargs, dataset, method)
+def _get_statistics(eval_method, dataset, method, method_kwargs, parameter_kwargs, ui_review, mask, ui_pairs=None):
+    review_fname, graph_fname = get_method_paths(method_kwargs, parameter_kwargs, dataset, method)
 
     # Load
     with open(review_fname, 'rb') as f:
@@ -286,12 +287,18 @@ def run(dataset, methods, data_path='experiment/seer-ijcai2020/', method_kwargs=
                 for methodology in method_kwargs[method].pop('methodologies'):
                     method_kwargs[method]['methodology'] = methodology
                     print(f'--{method}-{methodology}--')
+                    if methodology == 'greedy_item':
+                        for para in parameter_list:
+                            name = method + f'-{methodology}' + '-'.join([f'{k}-{v}' for k, v in para.items()])
+                            all_results[dataset][name], ui_pairs = \
+                                _get_statistics(eval_method, dataset, method, method_kwargs, para, ui_review, mask, ui_pairs)
+
                     all_results[dataset][method+ f'-{methodology}'], ui_pairs = \
-                        _get_statistics(eval_method, dataset, method, method_kwargs, ui_review, mask, ui_pairs)
+                        _get_statistics(eval_method, dataset, method, method_kwargs, None, ui_review, mask, ui_pairs)
             else:
                 print(f'--{method}--')
                 all_results[dataset][method], ui_pairs = _get_statistics(eval_method, dataset, method, method_kwargs,
-                                                                         ui_review, mask, ui_pairs)
+                                                                          None, ui_review, mask, ui_pairs)
         data2 = defaultdict(list)
         for dataset, method_res in all_results.items():
             for method, res in method_res.items():
@@ -322,10 +329,13 @@ def run(dataset, methods, data_path='experiment/seer-ijcai2020/', method_kwargs=
                'high' not in c and 'low' not in c]
     df = df[columns]
 
+    latex_table(df, all_results, dataset, _column_formatter, _method_formatter)
+
+
+def latex_table(df, all_results, dataset, c_formatter=None, m_formatter=None):
     # method selection
     own_methods = [i for i in df.index if i.startswith('global')]
     baselines = [i for i in df.index if not i.startswith('global')]
-
     m = df.loc[own_methods].max().values
     base_m = df.loc[baselines].max().values
 
@@ -369,8 +379,10 @@ def run(dataset, methods, data_path='experiment/seer-ijcai2020/', method_kwargs=
     s = df.style.highlight_max(subset=(rows, slice(None)), props='bfseries:', axis=0)
     s.format(n_format, subset=(rows, slice(None)))
     # s.format(partial(test, stat_sig=statistical_significance['independent']), subset=(['Improv \%'], slice(None)), )
-    s.format_index(_column_formatter, axis=1)
-    s.format_index(_method_formatter, axis=0)
+    if c_formatter is not None:
+        s.format_index(c_formatter, axis=1)
+    if m_formatter is not None:
+        s.format_index(m_formatter, axis=0)
     print(s.to_latex(clines='all;data'))
 
     print('\n\n--- Stat sig ---')

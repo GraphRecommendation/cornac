@@ -85,8 +85,11 @@ def reverse_id_mapping(eval_method, eid, type):
         raise NotImplementedError
 
 
-def get_method_paths(method_kwargs, dataset, method):
+def get_method_paths(method_kwargs, parameter_kwargs, dataset, method):
     ext = f'{method_kwargs["matching_method"]}_{"_".join(f"{k}_{v}" for k, v in sorted(method_kwargs[method].items()))}'
+
+    if parameter_kwargs is not None:
+        ext += '_'"_".join(f"{k}_{v}" for k, v in sorted(parameter_kwargs.items()))
 
     review_fname = f'statistics/output/selected_reviews_{dataset}_{method}_{ext}.pickle'
 
@@ -166,11 +169,10 @@ def initialize_model(path, dataset, method, parameter_kwargs=None):
         for p, v in data.items():
             if p in parameter_kwargs:
                 df_p = df_p[df_p[p] == parameter_kwargs[p]]
-            elif p == 'learn_weight' and not data.get(['learn_explainability'], False): # hotfix
+            elif p == 'learn_weight' and not data.get('learn_explainability', False): # hotfix
                 continue
             elif p not in ['file', 'id', 'index', 'epoch', 'score']:
                 df_p = df_p[df_p[p] == v]
-
 
         best_df = df_p[df_p.score == df_p.score.max()]
         data = best_df.loc[best_df.index[0]].to_dict()
