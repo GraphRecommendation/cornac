@@ -154,8 +154,11 @@ def run(datasets, methods, method_kwargs, parameter_kwargs):
                 # iterator = [('methodology', 'greedy_item')]
 
             for k, v in iterator:
-                if method.startswith('global') and v == 'greedy_item':
-                    it = parameter_list + [None]
+                if method.startswith('global'):
+                    if v == 'greedy_item':
+                        it = parameter_list[:-1]
+                    else:
+                        it = parameter_list[:1]
                 else:
                     it = [None]
 

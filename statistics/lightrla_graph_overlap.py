@@ -738,6 +738,11 @@ def draw_reviews(eval_method, sids, user, item, match):
     user_sid = {sid: (uid, iid) for uid, isid in eval_method.sentiment.user_sentiment.items()
                 for iid, sid in isid.items()}
     item_sid = {eval_method.sentiment.item_sentiment[item].values()}
+    id_aspect_map = {a_mapping[v]: k for k, v in reversed(eval_method.sentiment.aspect_id_map.items())}
+    id_opinion_map = {o_mapping[v]: k for k, v in reversed(eval_method.sentiment.opinion_id_map.items())}
+
+    org_user = {v: k for k, v in eval_method.global_uid_map.items()}
+    org_item = {v: k for k, v in eval_method.global_iid_map.items()}
 
     def mapping(eid, type):
         if type == 'i':
@@ -753,8 +758,10 @@ def draw_reviews(eval_method, sids, user, item, match):
     for sid in sids:
         for (a, o, s) in eval_method.sentiment.sentiment[sid]:
             uid, iid = user_sid[sid]
-            a, o = mapping(a_mapping[a], 'a'), mapping(o_mapping[o], 'o')
+            print({'user': uid, 'uid': org_user[uid], 'item': iid, 'iid': org_item[iid],
+                   'aspect': id_aspect_map[a_mapping[a]], 'opinion': id_opinion_map[o_mapping[o]], 'sentiment': s})
             uid = mapping(uid, 'u')
+            a, o = mapping(a_mapping[a], 'a'), mapping(o_mapping[o], 'o')
             edges.add((uid, a, 0))
             edges.add((a, o, s))
             edges.add((iid, a, 0))
@@ -780,8 +787,6 @@ def draw_reviews(eval_method, sids, user, item, match):
         else:
             color_map.append('red')
     labels = {}
-    id_aspect_map = {a_mapping[v]: k for k, v in reversed(eval_method.sentiment.aspect_id_map.items())}
-    id_opinion_map = {o_mapping[v]: k for k, v in reversed(eval_method.sentiment.opinion_id_map.items())}
     for node in G:
         if node < num_items + num_users:
             labels[node] = str(node)

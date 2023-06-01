@@ -22,7 +22,7 @@ parameter_list = [
     {'learn_explainability': False, 'graph_type': 'aos', 'learn_weight': 0.0},
     {'learn_explainability': True, 'learn_weight': 0.05},
     {'learn_explainability': True, 'learn_weight': 0.1},
-    {'learn_explainability': False, 'graph_type': 'ao'}
+    {'learn_explainability': False, 'graph_type': 'ao', 'learn_weight': 0.0}
     # {'learn_explainability': False, 'graph_type': 'o'},
     # {'learn_explainability': False, 'graph_type': 's'},
 ]
