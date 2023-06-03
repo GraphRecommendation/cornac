@@ -207,7 +207,7 @@ def run(path, dataset, method, at, method_kwargs, negative_sampling=True):
                             elif isinstance(metric, RankingMetric):
                                 gt = np.zeros_like(rk)
                                 gt[ps] = 1
-                                dictionary[mname].append((uid, iid, metric.compute(gt, rk)))
+                                dictionary[mname].append((uid, iid, metric.compute(gt, rk[::-1])))
 
                             else:
                                 dictionary[mname].append((uid, iid, np.mean(rk[ps])))
