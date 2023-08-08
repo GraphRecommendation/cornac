@@ -59,6 +59,7 @@ from .nmf import NMF
 from .online_ibpr import OnlineIBPR
 from .pcrl import PCRL
 from .pmf import PMF
+from .r3 import R3
 from .sbpr import SBPR
 from .skm import SKMeans
 from .sorec import SoRec

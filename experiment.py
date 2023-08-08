@@ -28,8 +28,6 @@ from cornac.data.text import BaseTokenizer
 
 import sys
 
-from cornac.models import MTER
-
 
 def run(in_kwargs, dataset, method, save_dir='.'):
     user_based = in_kwargs.pop('user_based', True)
@@ -217,8 +215,29 @@ def run(in_kwargs, dataset, method, save_dir='.'):
             'early_stopping': 5000,
             'eval_interval': 5
         }
+        from cornac.models import MTER
         model = MTER
-        print('working 1')
+    elif method == 'r3':
+        default_kwargs = {
+            'use_cuda': True,
+            'use_uva': False,
+            'batch_size': 256,
+            'num_workers': 5,
+            'num_epochs': 10,
+            'learning_rate': 0.0001,
+            'l2_weight': 1e-5,
+            'node_dim': 64,
+            'layer_dims': [64, 32, 16],
+            'model_selection': 'best',
+            'layer_dropout': .1,
+            'user_based': user_based,
+            'debug': False,
+            'out_path': save_dir,
+            'verbose': True,
+            'name': method
+        }
+        from cornac.models import R3
+        model = R3
     else:
         raise NotImplementedError
 
