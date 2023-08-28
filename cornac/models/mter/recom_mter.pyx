@@ -16,11 +16,13 @@
 # cython: language_level=3
 
 import multiprocessing as mp
+from copy import deepcopy
 
 cimport cython
 from cython cimport floating, integral
 from cython.parallel import parallel, prange
 from libc.math cimport sqrt, log, exp
+from libc.stdio cimport printf
 
 import scipy.sparse as sp
 import numpy as np
@@ -33,6 +35,7 @@ from ...utils import get_rng
 from ...utils.fast_dict cimport IntFloatDict
 from ...utils.init_utils import uniform
 from ..bpr.recom_bpr cimport RNGVector, has_non_zero
+
 
 
 cdef extern from "../bpr/recom_bpr.h" namespace "recom_bpr" nogil:
@@ -161,6 +164,9 @@ class MTER(Recommender):
         verbose=False,
         init_params=None,
         seed=None,
+        early_stopping=None,
+        model_selection='best',
+        eval_interval=5
     ):
         super().__init__(name=name, trainable=trainable, verbose=verbose)
 
@@ -176,6 +182,9 @@ class MTER(Recommender):
         self.max_iter = max_iter
         self.lr = lr
         self.seed = seed
+        self.early_stopping = early_stopping
+        self.model_selection = model_selection
+        self.eval_interval = eval_interval
 
         if seed is not None:
             self.n_threads = 1
@@ -399,6 +408,8 @@ class MTER(Recommender):
         del_a_reg = np.zeros_like(self.A).astype(np.float32)
         del_o_reg = np.zeros_like(self.O).astype(np.float32)
 
+        self.best_value = 0
+        best_state = None
         with trange(self.max_iter, disable=not self.verbose) as progress:
             for epoch in progress:
                 correct, skipped, loss, bpr_loss = self._fit_mter(
@@ -415,12 +426,28 @@ class MTER(Recommender):
                     del_g1_reg, del_g2_reg, del_g3_reg, del_u_reg, del_i_reg, del_a_reg, del_o_reg
                 )
 
+                if self.eval_interval % (epoch + 1) == 0 and val_set is not None and self.model_selection == 'best':
+                    from cornac.metrics import NDCG
+                    from cornac.eval_methods import ranking_eval
+                    metrics = [NDCG()]
+                    (result, _) = ranking_eval(self, metrics, self.train_set, val_set)
+
+                    if result[0] > self.best_value:
+                        self.best_value = result[0]
+                        self.best_epoch = epoch
+                        best_state = deepcopy((self.G1, self.U, self.I, self.A))
+
                 progress.set_postfix({
                     "loss": "%.2f" % (loss / 3 / self.n_element_samples),
-                    "bpr_loss": "%.2f" % (bpr_loss / self.n_bpr_samples),
+                    "bpr_loss": "%.2f" % (bpr_loss),
                     "correct": "%.2f%%" % (100.0 * correct / (self.n_bpr_samples - skipped)),
-                    "skipped": "%.2f%%" % (100.0 * skipped / self.n_bpr_samples)
+                    "skipped": "%.2f%%" % (100.0 * skipped / self.n_bpr_samples),
+                    "val": f"{self.best_value:.4f}@{self.best_epoch}"
                 })
+
+                if self.early_stopping is not None and epoch - self.best_epoch >= self.early_stopping:
+                    self.G1, self.U, self.I, self.A = best_state
+                    break
 
         if self.verbose:
             print('Optimization finished!')
@@ -593,9 +620,10 @@ class MTER(Recommender):
                 if z < .5:
                     correct += 1
                 del_bpr = ld_bpr * z * s
-
+                printf("p%f\n", pred)
+                printf("n%f\n", z)
+                printf("l%f\n", log(1 / (1 + exp(-pred))))
                 bpr_loss += log(1 / (1 + exp(-pred)))
-
                 for i in range(n_user_factors):
                     for j in range(n_item_factors):
                         i_ij = I[i_idx, j] - I[j_idx, j]

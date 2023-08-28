@@ -13,7 +13,7 @@ from ...data import Dataset
 
 class R3(Recommender):
     def __init__(self, name='R3', use_cuda=False, use_uva=False,
-                 batch_size=128,
+                 batch_size=64,
                  num_workers=0,
                  num_epochs=10,
                  learning_rate=0.1,
@@ -56,6 +56,9 @@ class R3(Recommender):
         self.objective = objective
         self.early_stopping = early_stopping
         self.layer_dropout = layer_dropout
+        self.lambda_ = 1
+        self.alpha = 1
+
         parameter_list = ['batch_size', 'learning_rate', 'l2_weight', 'node_dim', 'layer_dims',
                           'layer_dropout', 'model_selection']
         self.parameters = {}
@@ -200,7 +203,7 @@ class R3(Recommender):
         # Create sampler
         sampler = R3Sampler(self.review_graph, self.train_set.review_text.sequences)
 
-        sampler = dgl.dataloading.as_edge_prediction_sampler(sampler)
+        sampler = dgl.dataloading.as_edge_prediction_sampler(sampler, exclude='self')
 
         cf_dataloader = dgl.dataloading.DataLoader(g, cf_eids, sampler, batch_size=self.batch_size, shuffle=True,
                                                    drop_last=True, device=self.device, use_uva=self.use_uva,
@@ -225,25 +228,19 @@ class R3(Recommender):
             # CF
             with tqdm(cf_dataloader, disable=not self.verbose) as progress:
                 for i, batch in enumerate(progress, 1):
-                    input_nodes, g, blocks = batch
-                    x = self.model(input_nodes, g, blocks)
+                    input_nodes, g, _ = batch
+                    labels = g.edata['rating'].float()
+                    (p_r, p_c), z = self.model(input_nodes, g)
+                    loss_r, loss_c, loss_rc, loss_reg = self.model.loss(input_nodes, p_r, p_c, labels, z)
 
-                    pred = self.model.graph_predict(edge_subgraph, x)
+                    loss = loss_r + self.lambda_ * loss_rc + self.alpha * loss_reg
 
-                    if self.objective == 'ranking':
-                        pred_j = self.model.graph_predict(neg_subgraph, x)
-                        acc = (pred > pred_j).sum() / pred_j.shape.numel()
-                        loss = self.model.ranking_loss(pred, pred_j)
-                        l2 = self.l2_weight * self.model.l2_loss(edge_subgraph, neg_subgraph, x)
-                        cur_losses['loss'] = loss.detach()
-                        cur_losses['l2'] = l2.detach()
-                        cur_losses['acc'] = acc.detach()
-                        loss += l2
-                    else:
-                        loss = self.model.rating_loss(pred, edge_subgraph['n_i'].edata['label'])
-                        cur_losses['loss'] = loss.detach()
+                    cur_losses['l'] = loss.item()
+                    cur_losses['l_r'] = loss_r.item()
+                    cur_losses['l_c'] = loss_c.item()
+                    cur_losses['l_rc'] = loss_rc.item()
+                    cur_losses['l_reg'] = loss_reg.item()
 
-                    loss = loss
                     loss.backward()
                     for k, v in cur_losses.items():
                         tot_losses[k] += v
@@ -258,21 +255,21 @@ class R3(Recommender):
                     loss_str = ','.join([f'{k}: {v/i:.3f}' for k, v in tot_losses.items()])
                     if i != cf_length:
                         progress.set_description(f'Epoch {e}, ' + loss_str)
-                    else:
-                        if val_set is not None:
-                            results = self._validate(val_set, metrics)
-                            res_str = 'Val: ' + ', '.join([f'{m.name}: {r:.3f}' for m, r in zip(metrics, results)])
-                            progress.set_description(f'Epoch {e}, ' + f'{loss_str}, ' + res_str)
-
-                            if self.summary_writer is not None:
-                                for m, r in zip(metrics, results):
-                                    self.summary_writer.add_scalar(f'val/{m.name}', r, e)
-
-                            if self.model_selection == 'best' and (results[0] > best_score if metrics[0].higher_better
-                                    else results[0] < best_score):
-                                best_state = deepcopy(self.model.state_dict())
-                                best_score = results[0]
-                                best_epoch = e
+                    # else:
+                    #     if val_set is not None:
+                    #         results = self._validate(val_set, metrics)
+                    #         res_str = 'Val: ' + ', '.join([f'{m.name}: {r:.3f}' for m, r in zip(metrics, results)])
+                    #         progress.set_description(f'Epoch {e}, ' + f'{loss_str}, ' + res_str)
+                    #
+                    #         if self.summary_writer is not None:
+                    #             for m, r in zip(metrics, results):
+                    #                 self.summary_writer.add_scalar(f'val/{m.name}', r, e)
+                    #
+                    #         if self.model_selection == 'best' and (results[0] > best_score if metrics[0].higher_better
+                    #                 else results[0] < best_score):
+                    #             best_state = deepcopy(self.model.state_dict())
+                    #             best_score = results[0]
+                    #             best_epoch = e
 
             if self.early_stopping is not None and e - best_epoch >= self.early_stopping:
                 break
