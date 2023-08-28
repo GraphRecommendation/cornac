@@ -579,19 +579,19 @@ class GlobalRLA(Recommender):
                         else:
                             input_nodes, edge_subgraph, blocks = batch
 
-                        nx, x, nx_sub = self.model(blocks, self.model.get_initial_embedings(all_nodes), input_nodes)
+                        node_rep, e_star, node_rep_subset = self.model(blocks, self.model.get_initial_embedings(all_nodes), input_nodes)
 
-                        rp, pred = self.model.graph_predict(edge_subgraph, [nx_sub, x])
+                        rp, pred = self.model.graph_predict(edge_subgraph, [node_rep_subset, e_star])
                         rp = rp.unsqueeze(-1)
-
+                        loss = 0
                         if self.objective == 'ranking':
-                            rp_j, pred_j = self.model.graph_predict(neg_subgraph, [nx_sub, x])
+                            rp_j, pred_j = self.model.graph_predict(neg_subgraph, [node_rep_subset, e_star])
                             pred_j = pred_j.reshape(-1, self.num_neg_samples)
                             rp_j = rp_j.reshape(-1, self.num_neg_samples)
                             acc = (pred > pred_j).sum() / pred_j.shape.numel()
-                            loss = self.model.ranking_loss(pred, pred_j)
-                            cur_losses['loss'] = loss.detach()
-                            cur_losses['acc'] = acc.detach()
+                            # loss += self.model.ranking_loss(pred, pred_j)
+                            # cur_losses['loss'] = loss.detach()
+                            # cur_losses['acc'] = acc.detach()
 
                             acc = (rp > rp_j).sum() / rp_j.shape.numel()
                             rl = self.model.ranking_loss(rp, rp_j)
@@ -603,7 +603,7 @@ class GlobalRLA(Recommender):
                                 loss += rl
 
                             if self.l2_weight:
-                                l2 = self.l2_weight * self.model.l2_loss(edge_subgraph, neg_subgraph, x)
+                                l2 = self.l2_weight * self.model.l2_loss(edge_subgraph, neg_subgraph, e_star)
                                 loss += l2
                                 cur_losses['l2'] = l2.detach()
                         else:
@@ -611,7 +611,7 @@ class GlobalRLA(Recommender):
                             cur_losses['loss'] = loss.detach()
 
                         if self.learn_explainability:
-                            aos_loss, aos_acc = self.model.aos_graph_predict(edge_subgraph, nx, x)
+                            aos_loss, aos_acc = self.model.aos_graph_predict(edge_subgraph, node_rep, e_star)
                             aos_loss = aos_loss.mean()
                             cur_losses['aos_loss'] = aos_loss.detach()
                             cur_losses['aos_acc'] = (aos_acc.sum() / aos_acc.shape.numel()).detach()

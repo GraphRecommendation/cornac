@@ -595,51 +595,53 @@ class Model(nn.Module):
             return x
 
     def forward(self, blocks, x, input_nodes):
+        # Compute preference embeddings
         blocks, lgcn_blocks, mask = blocks
         if self.preference_module == 'lightgcn':
-            lx = self.lightgcn(lgcn_blocks[0].ndata[dgl.NID], lgcn_blocks[:-1])
+            e = self.lightgcn(lgcn_blocks[0].ndata[dgl.NID], lgcn_blocks[:-1])
         elif self.preference_module == 'mf':
             # Get user/item representation without any graph convolutions.
-            lx = {ntype: self.lightgcn.features[ntype](nids) for ntype, nids in
+            e = {ntype: self.lightgcn.features[ntype](nids) for ntype, nids in
                   lgcn_blocks[-1].srcdata[dgl.NID].items() if ntype != 'node'}
         else:
             raise NotImplementedError(f'{self.preference_module} is not supported')
 
+        # Move all nodes into same sorting (non-typed)
         g = lgcn_blocks[-1]
         with g.local_scope():
-            g.srcdata['h'] = lx
+            g.srcdata['h'] = e
             funcs = {etype: (fn.copy_u('h', 'm'), fn.sum('m', 'h')) for etype in g.etypes}
             g.multi_update_all(funcs, 'sum')
-            lx = g.dstdata['h']['node']
+            e = g.dstdata['h']['node']
 
+        # Compute review embeddings
         x = self.node_dropout(x)
-        nx, x = self.review_representation(x, mask)
+        node_representation, r_ui = self.review_representation(x, mask)
 
         b, = blocks
-        # lx = lx[b.dstdata[dgl.NID]]
-        x = x[b.srcdata[dgl.NID]]
-        x = self.review_aggregation(b, x)
+        r_ui = r_ui[b.srcdata[dgl.NID]]
+        r_n = self.review_aggregation(b, r_ui)  # Node representation from reviews
 
-        x, lx = self.node_dropout(x), self.node_dropout(lx)
+        r_n, e = self.node_dropout(r_n), self.node_dropout(e)
 
         if self.combiner == 'concat':
-            x = torch.cat([x, lx], dim=-1)
+            e_star = torch.cat([r_n, e], dim=-1)
         elif self.combiner == 'add':
-            x = x + lx
+            e_star = r_n + e
         elif self.combiner == 'bi-interaction':
-            a = self.add_mlp(x + lx)
-            m = self.mul_mlp(x * lx)
-            x = a + m
+            a = self.add_mlp(r_n + e)
+            m = self.mul_mlp(r_n * e)
+            e_star = a + m
         elif self.combiner == 'mul':
-            x = x * lx
+            e_star = r_n * e
         elif self.combiner == 'review-only':
-            pass
+            e_star = r_n
         elif self.combiner == 'self':
-            x = torch.cat([x, nx[b.dstdata[dgl.NID]]], dim=-1)
+            e_star = torch.cat([r_n, node_representation[b.dstdata[dgl.NID]]], dim=-1)
         elif self.combiner == 'self-only':
-            x = nx[b.dstdata[dgl.NID]]
+            e_star = node_representation[b.dstdata[dgl.NID]]
 
-        return nx, x, nx[b.dstdata[dgl.NID]]
+        return node_representation, e_star, node_representation[b.dstdata[dgl.NID]]
 
     def _graph_predict_dot(self, g: dgl.DGLGraph, x):
         with g.local_scope():
