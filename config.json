@@ -4,5 +4,13 @@
   "GPU_MULT": 1,
   "BASE": "source .venv/bin/activate;",
   "DATASET": "cellphone",
-  "METHOD": "light2"
+  "METHOD": "globalrla",
+  "PHASES": [3,4],
+  "ABLATION": {
+    "globalrla": {
+      "fixed": {"preference_module": "lightgcn"},
+      "ablation": ["graph_type", ["aos", "ao", "a", "o", "as", "os", "n"]]
+    }
+  },
+  "skip_tried": true
 }
