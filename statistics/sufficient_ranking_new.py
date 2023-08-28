@@ -251,6 +251,10 @@ def run(path, dataset, method, at, method_kwargs, negative_sampling=True):
                 # ts_f, pf = stats.ttest_rel(rank_f, other_rankings_f, alternative='greater')
 
             print(f'{name}: our {np.mean(inner_r)}, base {np.mean(other_rankings_u)}, pval {pu}')
+
+            if metric_name == 'mean':
+                n_items = eval_method.train_set.num_items - 1
+                print(f'{name}: our {n_items - np.mean(inner_r)}, base {n_items - np.mean(other_rankings_u)}, pval {pu}')
         #
         # if ts_f is not None:
         #     print(f'Flat: {ts_f}, {pf}')

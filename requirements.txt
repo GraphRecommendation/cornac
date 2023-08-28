@@ -16,7 +16,11 @@ gensim==4.2.0
 sentence-transformers==2.2.2
 dgl==1.0.*
 torchvision==0.13.1
-torch==1.12.1
+torch~=1.13.1+cu116
 filelock==3.8.2
 # gensim==4.3.0
 sentence-transformers==2.2.2
+
+setuptools~=44.0.0
+networkx~=3.1
+cachetools~=5.3.0

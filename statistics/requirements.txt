@@ -1,5 +1,7 @@
-latextable
-evaluate
-rouge_score
-bert_score
+latextable==1.0.0
+evaluate==0.4.0
+rouge_score==0.1.2
+bert_score==0.3.13
 git+https://github.com/google-research/bleurt.git
+datasets==2.10.0
+jinja2==3.1.2
