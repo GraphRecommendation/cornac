@@ -80,6 +80,22 @@ class HearBlockSampler(dgl.dataloading.NeighborSampler):
         self.compact = compact
         self.hard_negatives = hard_negatives
         self.n_ui_graph = self._nu_graph()
+        self.exclude_sids = self._create_exclude_sids(self.node_review_graph)
+
+    def _create_exclude_sids(self, n_r_graph):
+        exclude_sids = []
+        for sid in sorted(n_r_graph.nodes('review')):
+            neighbors = n_r_graph.successors(sid)
+            es = []
+            for n in neighbors:
+                es.append(n_r_graph.predecessors(n))
+
+            if len(es) > 0:
+                exclude_sids.append(torch.cat(es))
+            else:
+                exclude_sids.append(torch.LongTensor([]))
+        return exclude_sids
+
 
     def _nu_graph(self):
         n_nodes = self.node_review_graph.num_nodes('node')
@@ -126,30 +142,10 @@ class HearBlockSampler(dgl.dataloading.NeighborSampler):
                 block.add_edges(block.srcnodes()[perm[:self.fanouts[0]]],
                                 index.repeat(min(max(1, self.fanouts[0]), block.num_src_nodes())))
 
-        # r_gs = [self.review_graphs[sid] for sid in block.srcdata[dgl.NID].cpu().numpy()]
-        # if self.compact:
-        #     r_gs = dgl.compact_graphs(r_gs)
-        #     nid = [bg.ndata[dgl.NID] for bg in r_gs]
-        # else:
-        #     nid = [bg.nodes() for bg in r_gs]
-
-        # batch = dgl.batch(r_gs)
-        #
-        # # Get original ids
-        # nid = torch.cat(nid)
-        # batch.ndata[dgl.NID] = nid
-        # bz = len(exclude_eids) if exclude_eids is not None else 256
-        # n_batches = len(r_gs) // bz
-        # n_batches += 1 if len(r_gs) % bz != 0 else 0
-        # batch = [dgl.batch(r_gs[i*bz:(i+1)*bz]) for i in range(n_batches)]
-        # nid = [torch.cat(nid[i*bz:(i+1)*bz]) for i in range(n_batches)]
-
-        # blocks.insert(0, batch)
-        # input_nodes = nid
-
         blocks2 = []
         seed_nodes = output_nodes
 
+        # LightGCN Sampling
         for i in range(4):
             if i == 0:
                 frontier = self.n_ui_graph.sample_neighbors(
@@ -167,19 +163,27 @@ class HearBlockSampler(dgl.dataloading.NeighborSampler):
             seed_nodes = block.srcdata[dgl.NID]
             blocks2.insert(0, block)
 
-        # sample aos pos and negative pair.
-        if self.hard_negatives:
-            neg_aos = torch.multinomial(self.aos_probabilities, len(exclude_eids) * self.n_neg, replacement=True)\
-                .reshape(len(exclude_eids), self.n_neg)
-        else:
-            neg_aos = torch.randint(len(self.aos_probabilities), size=(len(exclude_eids), self.n_neg))
-
         pos_aos = []
+        neg_aos = []
         for sid in g.edata['sid'][exclude_eids].cpu().numpy():
             aosid = self.sid_aos[sid]
-            pos_aos.append(aosid[torch.randperm(len(aosid))[0]])
+            aosid = aosid[torch.randperm(len(aosid))[0]]
+
+            if self.hard_negatives:
+                propability = self.aos_probabilities
+            else:
+                propability = torch.ones(len(self.aos_probabilities))
+
+            # Exclude self and other aspects/opinions mentioned by the user or item.
+            propability[aosid] = 0
+            exclude_sids = torch.cat([self.sid_aos[i] for i in self.exclude_sids[sid]])
+            propability[exclude_sids] = 0
+
+            neg_aos.append(torch.multinomial(propability, self.n_neg, replacement=True))
+            pos_aos.append(aosid)
 
         pos_aos = torch.LongTensor(pos_aos)
+        neg_aos = torch.stack(neg_aos)
 
         pos_aos, neg_aos = self.aos_list[pos_aos], self.aos_list[neg_aos]
 
