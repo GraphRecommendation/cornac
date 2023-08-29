@@ -674,15 +674,15 @@ class Model(nn.Module):
         else:
             raise ValueError(f'Predictor not implemented for "{self.predictor}".')
 
-    def aos_graph_predict(self, g: dgl.DGLGraph, nx, x):
+    def aos_graph_predict(self, g: dgl.DGLGraph, node_rep, e_star):
         with g.local_scope():
             u, v = g.edges()
-            u_emb, i_emb = x[u], x[v]
+            u_emb, i_emb = e_star[u], e_star[v]
             a, o, s = g.edata['pos'].T  # todo reindex a and o to be proper values.
-            a_emb, o_emb = nx[a], nx[o]
+            a_emb, o_emb = node_rep[a], node_rep[o]
             preds_i = self.aos_predictor(u_emb, i_emb, a_emb, o_emb, s)
             a, o, s = g.edata['neg'].permute(2, 0, 1)
-            a_emb, o_emb = nx[a], nx[o]
+            a_emb, o_emb = node_rep[a], node_rep[o]
             preds_j = self.aos_predictor(u_emb, i_emb, a_emb, o_emb, s)
             if self.aos_predictor.loss == 'bpr':
                 return self.bpr_loss_fn(- (preds_i - preds_j)), preds_i > preds_j
