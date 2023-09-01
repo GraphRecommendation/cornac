@@ -21,7 +21,8 @@ from copy import deepcopy
 import pandas as pd
 import torch
 
-from cornac.datasets import amazon_cellphone_seer, amazon_computer_seer, amazon_toy_seer, amazon_camera_seer
+from cornac.datasets import (amazon_cellphone_seer, amazon_computer_seer, amazon_toy_seer, amazon_camera_seer,
+                             amazon_book_seer)
 from cornac.eval_methods import StratifiedSplit
 from cornac.data import ReviewModality, SentimentModality, Reader
 from cornac.data.text import BaseTokenizer
@@ -261,6 +262,10 @@ def run(in_kwargs, dataset, method, save_dir='.'):
         feedback = amazon_camera_seer.load_feedback(fmt="UIRT", reader=Reader())
         reviews = amazon_camera_seer.load_review()
         sentiment = amazon_camera_seer.load_sentiment(reader=Reader())
+    elif dataset == 'book':
+        feedback = amazon_book_seer.load_feedback(fmt="UIRT", reader=Reader(min_user_freq=3))
+        reviews = amazon_book_seer.load_review()
+        sentiment = amazon_book_seer.load_sentiment(reader=Reader())
     else:
         raise NotImplementedError(dataset, 'not valid.')
 
