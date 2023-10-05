@@ -3,13 +3,13 @@
 source .venv/bin/activate
 export PYTHONPATH=${PWD}
 
-METHODS='globalrla-e' # hrdr narre'
+METHODS='hypar-e' # hrdr narre'
 DATASETS='cellphone' # toy computer camera'
 MATCHES='a ao'
 METHODOLOGIES='greedy_item greedy_user weighted item'
 for DATASET in $DATASETS; do
   for METHOD in $METHODS; do
-    if [[ "$METHOD" =~ ^globalrla.* ]]; then
+    if [[ "$METHOD" =~ ^hypar.* ]]; then
       for MM in $MATCHES; do
         for METHO in $METHODOLOGIES; do
           echo $DATASET $METHOD $MM $METHO

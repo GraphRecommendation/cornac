@@ -95,7 +95,7 @@ def get_method_paths(method_kwargs, parameter_kwargs, dataset, method):
 
     # Graph of kgat is dependent on the methodology of lightrla.
     if method == 'kgat':
-        ext += '_'"_".join(f"{k}_{v}" for k, v in sorted(method_kwargs['globalrla'].items()))
+        ext += '_'"_".join(f"{k}_{v}" for k, v in sorted(method_kwargs['hypar'].items()))
 
     graph_fname = f'statistics/output/selected_graphs_{dataset}_{method}_{ext}.pickle'
     return review_fname, graph_fname
@@ -148,9 +148,9 @@ def initialize_dataset(dataset):
 
 METHOD_NAMES = {'lightrla': 'LightRLA', 'narre': 'NARRE', 'hrdr': 'HRDR', 'kgat': 'KGAT', 'bpr': 'BPR',
              'trirank': 'TriRank', 'narre-bpr': 'NARRE_BPR', 'hrdr-bpr': 'HRDR_BPR', 'ngcf': 'ngcf',
-             'lightgcn': 'lightgcn', 'light-e-cyclic': 'light-e-cyclic', 'globalrla': 'LightRLA',
-             'globalrla-e': 'LightRLA', 'globalrla-le': 'LightRLA', 'globalrla-l': 'LightRLA',
-                'globalrla-lg': 'LightRLA'}
+             'lightgcn': 'lightgcn', 'light-e-cyclic': 'light-e-cyclic', 'hypar': 'LightRLA',
+             'hypar-e': 'LightRLA', 'hypar-le': 'LightRLA', 'hypar-l': 'LightRLA',
+                'hypar-lg': 'LightRLA'}
 METHOD_REMATCH = {'narre-bpr': 'narre', 'hrdr-bpr': 'hrdr'}
 
 
@@ -183,7 +183,7 @@ def initialize_model(path, dataset, method, parameter_kwargs=None):
 
     if method in ['narre', 'hrdr']:
         model = model.load(os.path.join(dir_path, file))
-    elif method.startswith('globalrla'):
+    elif method.startswith('hypar'):
         model = model.load(os.path.join(dir_path, file))
 
     return model

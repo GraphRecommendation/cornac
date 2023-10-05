@@ -18,8 +18,8 @@ from ...data import Dataset
 from ...utils.graph_construction import generate_mappings, stem_fn
 
 
-class GlobalRLA(Recommender):
-    def __init__(self, name='LightRLA', use_cuda=False, use_uva=False, stemming=True,
+class HypAR(Recommender):
+    def __init__(self, name='HypAR', use_cuda=False, use_uva=False, stemming=True,
                  batch_size=128,
                  num_workers=0,
                  num_epochs=10,
@@ -475,7 +475,7 @@ class GlobalRLA(Recommender):
         n_r_types = max(self.node_review_graph.edata['r_type']) + 1
 
         # create model
-        from .globalrla import Model
+        from .hypar import Model
 
         self.model = Model(self.ui_graph, n_nodes, self.n_relations, n_r_types, self.review_aggregator,
                            self.predictor, self.node_dim, self.review_graphs, self.num_heads, [self.layer_dropout]*2,

@@ -233,7 +233,7 @@ def _get_statistics(eval_method, dataset, method, method_kwargs, parameter_kwarg
     with open(review_fname, 'rb') as f:
         data = pickle.load(f)
 
-    if method in ['lightrla', 'globalrla', 'globalrla-e']:
+    if method in ['lightrla', 'hypar', 'hypar-e']:
         data = extract_rid(eval_method, data)
         # mask = [len(e[-1]) > 2 for e in data]
         ui_pairs = {(u, i) for u, i, _ in data}
@@ -253,7 +253,7 @@ def _method_formatter(method):
         else:
             extension = 'gu'
 
-        return f'{method.replace("globalrla", "LightRLA")}$_{{{extension}}}$'
+        return f'{method.replace("hypar", "LightRLA")}$_{{{extension}}}$'
     elif method == 'narre':
         return 'NARRE'
     elif method == 'hrdr':
@@ -283,7 +283,7 @@ def run(dataset, methods, data_path='experiment/seer-ijcai2020/', method_kwargs=
         df = pd.read_csv(os.path.join('experiment', 'seer-ijcai2020', dataset, 'profile.csv'), sep=',')
         ui_review = extract_test_reviews(df, eval_method)
         for method in methods:
-            if method in ['lightrla', 'globalrla', 'globalrla-e']:
+            if method in ['lightrla', 'hypar', 'hypar-e']:
                 for methodology in method_kwargs[method].pop('methodologies'):
                     method_kwargs[method]['methodology'] = methodology
                     print(f'--{method}-{methodology}--')

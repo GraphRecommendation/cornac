@@ -13,4 +13,4 @@
 # limitations under the License.
 # ============================================================================
 
-from .recom_globalrla import GlobalRLA
+from .recom_hypar import HypAR

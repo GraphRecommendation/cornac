@@ -48,7 +48,7 @@ def run(path, dataset, method, method_kwargs, parameter_kwargs, draw=False, reru
     if (not os.path.isfile(review_fname) or rerun) and method not in ['kgat']:
         with tqdm(list(zip(*eval_method.test_set.csr_matrix.nonzero()))) as progress:
             for i, (user, item) in enumerate(progress, 1):
-                if method in ['lightrla'] or method.startswith('globalrla'):
+                if method in ['lightrla'] or method.startswith('hypar'):
                     r = reverse_path(eval_method, user, item, matching_method)
                     # TODO fix, should not be none or better handling
                     if r is None:
@@ -77,10 +77,10 @@ def run(path, dataset, method, method_kwargs, parameter_kwargs, draw=False, reru
             uis = pickle.load(f)
 
     # Create graph
-    if method in ['lightrla', 'globalrla']:
+    if method in ['lightrla', 'hypar']:
         uig = lightrla_graph_overlap.sid_to_graphs(eval_method, uis, matching_method)
     elif method == 'kgat':
-        _, lightrla_fname = get_method_paths(method_kwargs, parameter_kwargs.get('globalrla'), dataset, 'globalrla')
+        _, lightrla_fname = get_method_paths(method_kwargs, parameter_kwargs.get('hypar'), dataset, 'hypar')
         assert os.path.isfile(lightrla_fname), 'This method can be dependant on LightRLA (for fair comparison). ' \
                                                'Please run with lightrla before kgat.'
 
