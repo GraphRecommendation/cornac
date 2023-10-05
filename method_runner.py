@@ -40,12 +40,9 @@ def create_hyperparameter_dict(comb, model_parameters, shared_parameters):
 
 
 def run(dataset, method):
-    global shared_hyperparameters, lightrla_hyperparameters, GPUS
-    if method == 'lightrla':
-        parameters = lightrla_hyperparameters
-    elif method == 'light2':
-        method = 'lightrla'
-        parameters = lightrla2_hyperparameters
+    global shared_hyperparameters, hypar_hyperparameters, GPUS
+    if method == 'hypar':
+        parameters = hypar_hyperparameters
     elif method in ['kgat', 'lightgcn', 'ngcf']:
         parameters = kgat_hyperparameters
     elif method == 'bpr':

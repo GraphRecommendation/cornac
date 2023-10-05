@@ -18,10 +18,10 @@ else:
 GPUS = [g for _ in range(config['GPU_MULT']) for g in GPUS]  # Multiplier for multiple processes per GPU.
 BASE_STR = config['BASE']
 
-name_dict = {'lightrla': 'LightRLA', 'narre': 'NARRE', 'hrdr': 'HRDR', 'kgat': 'KGAT', 'bpr': 'BPR',
+name_dict = {'narre': 'NARRE', 'hrdr': 'HRDR', 'kgat': 'KGAT', 'bpr': 'BPR',
              'trirank': 'TriRank', 'narre-bpr': 'NARRE_BPR', 'hrdr-bpr': 'HRDR_BPR', 'ngcf': 'ngcf',
-             'lightgcn': 'lightgcn', 'hypar': 'LightRLA', 'hypar-l': 'LightRLA', 'hypar-le': 'LightRLA',
-             'hypar-e': 'LightRLA', 'hypar-lg': 'LightRLA'}
+             'lightgcn': 'lightgcn', 'hypar': 'HypAR', 'hypar-l': 'HypAR', 'hypar-le': 'HypAR',
+             'hypar-e': 'HypAR', 'hypar-lg': 'HypAR'}
 
 
 def process_runner(dataset, method, parameters, gpu):
@@ -100,8 +100,8 @@ def run(dataset, method, phases, path='results'):
         fixed_parameters = phase_parameters.get('fixed', {})
         optimal_parameters = phase_parameters.get('optimal', {})
 
-        if method == 'lightrla-explain':
-            method = 'lightrla'
+        if method == 'hypar-explain':
+            method = 'hypar'
 
         # if using optimal parameters find optimal and assign.
         if len(optimal_parameters) > 0:

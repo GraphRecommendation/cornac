@@ -100,8 +100,8 @@ def run(datasets, methods, tune_dataset, ablation_kwargs, path='results'):
                 optimal_parameters['skip_tried'] = config.get('skip_tried', False)
                 optimal_parameters.update(shared_hyperparameters)
 
-                if method in ['lightrla-explain', 'light-e-cyclic']:
-                    method = 'lightrla'
+                if method in ['hypar-explain']:
+                    method = 'hypar'
 
                 if ap is not None and op is not None:
                     optimal_parameters[ap] = op

@@ -10,7 +10,7 @@
     "objective": "ranking",
     "eval_interval": 1
   },
-  "lightrla": {
+  "hypar": {
     "phases": [
       {
         "tune": {
@@ -98,7 +98,7 @@
       "fanout": 10
     }
   },
-  "lightrla-explain": {
+  "hypar-explain": {
     "phases": [
       {
         "tune": {
@@ -150,55 +150,10 @@
       "preference_module": "lightgcn",
       "combiner": "concat",
       "predictor": "dot",
-      "name": "lightrla-explain"
+      "name": "hypar-explain"
     }
   },
-  "light-e-cyclic": {
-    "phases": [
-      {
-        "tune": {
-          "learning_rate": [
-            1e-06,
-            1e-05,
-            0.0001,
-            0.001,
-            0.01
-          ]
-        },
-        "optimal": {
-          "learn_weight": 0.1
-        }
-      },
-      {
-        "tune": {
-          "learn_weight": [
-            0.0, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0
-          ]
-        },
-        "optimal": {
-          "learning_rate": 0.01
-        }
-      }
-    ],
-    "default": {
-      "dropout": 0.3,
-      "learn_method": "transr",
-      "learn_pop_sampling": false,
-      "learn_explainability": true,
-      "l2_weight": 0,
-      "num_neg_samples": 50,
-      "fanout": 10,
-      "review_aggregator": "narre",
-      "preference_module": "lightgcn",
-      "combiner": "concat",
-      "predictor": "dot",
-      "name": "light-e-cyclic",
-      "weight_decay": 0.01,
-      "use_relations": false,
-      "non_linear": false
-    }
-  },
-  "globalrla": {
+  "hypar": {
     "phases": [
       {
         "tune": {
@@ -385,7 +340,7 @@
       "embedding_type": "ao_embeddings"
     }
   },
-  "globalrla-l": {
+  "hypar-l": {
     "phases": [
       {
         "tune": {
@@ -491,7 +446,7 @@
       "graph_type": "aos"
     }
   },
-  "globalrla-e": {
+  "hypar-e": {
     "phases": [
       {
         "tune": {
@@ -524,7 +479,7 @@
       "graph_type": "aos"
     }
   },
-  "globalrla-le": {
+  "hypar-le": {
     "phases": [
       {
         "tune": {
@@ -557,7 +512,7 @@
       "graph_type": "aos"
     }
   },
-  "globalrla-lg": {
+  "hypar-lg": {
     "phases": [
       {
         "tune": {

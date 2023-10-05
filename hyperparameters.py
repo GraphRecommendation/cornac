@@ -13,7 +13,7 @@ shared_hyperparameters = {
     'predictor': 'narre',
 }
 
-lightrla2_hyperparameters = {
+hypar2_hyperparameters = {
     'review_aggregator': ['narre'],
     'preference_module': ['lightgcn'],
     'predictor': ['dot'],
@@ -25,7 +25,7 @@ lightrla2_hyperparameters = {
     'name': ['light2']
 }
 
-lightrla_hyperparameters = {
+hypar_hyperparameters = {
     'review_aggregator': ['narre'],
     'preference_module': ['mf', 'lightgcn'],
     'combine': ['concat'],
